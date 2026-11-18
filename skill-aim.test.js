@@ -6,7 +6,7 @@ function setup(character = 'alex') {
   const player = { character, dead: false, stun: 0, air: 0, qCd: 0, eCd: 0, cCd: 0 };
   const events = [], state = { playing: true, point: { x: 4, z: 0 }, valid: true };
   const aim = createSkillAim({ self: () => player, playing: () => state.playing, point: () => state.point,
-    validLeap: () => state.valid, emit: (event, data) => events.push({ event, data }) });
+    validLeap: () => state.valid, mode: () => state.mode || 'hold', emit: (event, data) => events.push({ event, data }) });
   return { aim, player, events, state };
 }
 
@@ -66,4 +66,22 @@ test('summon C selects a direction while self buffs do not enter targeting mode'
     const { aim, events } = setup(character); assert.equal(aim.begin('e'), false);
     assert.equal(aim.current, null); assert.equal(events.length, 0);
   }
+});
+
+test('Lucia Q selects a projectile direction, E selects a warp point, and C remains instant', () => {
+  const { aim, player, events } = setup('lucia');
+  aim.begin('q'); assert.equal(aim.current.kind, 'projectile'); aim.release('q');
+  aim.begin('e'); assert.equal(aim.current.kind, 'warp'); assert.equal(events.length, 1);
+  aim.release('e'); assert.deepEqual(events.map(e => e.event), ['q', 'dash']);
+  assert.equal(aim.begin('c'), false);
+  aim.begin('q'); player.warping = 1; aim.update(); aim.release('q'); assert.equal(events.length, 2);
+});
+
+test('toggle aim ignores release, confirms by click, cancels on repeated key and releases armed leaps', () => {
+  const { aim, events, state } = setup(); state.mode = 'toggle';
+  aim.begin('q'); aim.release('q'); assert.equal(aim.current.key,'q'); assert.equal(events.length,0);
+  aim.begin('q'); assert.equal(aim.current,null); assert.equal(events.length,0);
+  aim.begin('q'); aim.confirm(); aim.release('q'); assert.equal(events.length,1);
+  aim.begin('e'); aim.release('e'); assert.equal(aim.current.kind,'leap');
+  aim.begin('e'); assert.equal(aim.current,null); assert.equal(events.at(-1).event,'cancelLeap');
 });

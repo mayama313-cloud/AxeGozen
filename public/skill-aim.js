@@ -1,17 +1,19 @@
 // 照準中のスキルを1つだけ保持し、クリック後のキー解放による二重発動を防ぐ。
-function createSkillAim({ self, playing, point, validLeap, emit, changed = () => {} }) {
+function createSkillAim({ self, playing, point, validLeap, emit, changed = () => {}, mode = () => 'hold' }) {
   let current = null;
   const set = value => { current = value; changed(value); };
   const cancel = () => {
     if (current?.kind === 'leap') emit('cancelLeap');
     if (current) set(null);
   };
-  const usable = player => playing() && player && !player.dead && !(player.stun > 0) && !(player.air > 0);
+  const usable = player => playing() && player && !player.dead && !(player.stun > 0) && !(player.air > 0) && !(player.warping > 0);
   function begin(key) {
+    if (current?.key === key && mode() === 'toggle') { cancel(); return true; }
     const player = self();
     if (!usable(player) || player[key + 'Cd'] > 0) return false;
-    const kind = key === 'q' ? 'cone' : key === 'e' && player.character === 'alex' ? 'leap'
-      : key === 'c' ? player.character === 'mira' ? 'projectile' : 'summon' : null;
+    const kind = key === 'q' ? player.character === 'lucia' ? 'projectile' : 'cone'
+      : key === 'e' ? player.character === 'alex' ? 'leap' : player.character === 'lucia' ? 'warp' : null
+      : key === 'c' ? player.character === 'lucia' ? null : player.character === 'mira' ? 'projectile' : 'summon' : null;
     if (!kind) return false;
     cancel();
     set({ key, kind, character: player.character });
@@ -22,15 +24,15 @@ function createSkillAim({ self, playing, point, validLeap, emit, changed = () =>
     const player = self(), aim = current;
     if (!aim) return false;
     if (!usable(player) || player.character !== aim.character || player[aim.key + 'Cd'] > 0) { cancel(); return false; }
-    if (!Number.isFinite(target?.x) || !Number.isFinite(target?.z) || (aim.kind === 'leap' && !validLeap(target, player))) {
+    if (!Number.isFinite(target?.x) || !Number.isFinite(target?.z) || (['leap', 'warp'].includes(aim.kind) && !validLeap(target, player))) {
       if (released) cancel();
       return false;
     }
     set(null);
-    emit(aim.kind === 'leap' ? 'leap' : aim.key, target);
+    emit(aim.kind === 'leap' ? 'leap' : aim.kind === 'warp' ? 'dash' : aim.key, target);
     return true;
   }
-  function release(key) { if (current?.key === key) return confirm(point(), true); return false; }
+  function release(key) { if (mode() === 'toggle') return false; if (current?.key === key) return confirm(point(), true); return false; }
   function update() {
     const player = self();
     if (current && (!usable(player) || player.character !== current.character || player[current.key + 'Cd'] > 0)) cancel();

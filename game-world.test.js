@@ -18,6 +18,7 @@ function setup(solo = false, characters = ['alex', 'alex']) {
   a.send('selectCharacter', { id: characters[0] }); a.send('confirmCharacter');
   if (!solo) { b.send('selectCharacter', { id: characters[1] }); b.send('confirmCharacter'); }
   const { players, towers, robots } = match.state;
+  match.state.environment.enabled = false;
   // 各テストで必要なタワーだけ反撃させる。
   for (const t of Object.values(towers)) t.atkCd = 10000;
   return { match, a, b, p: players.a, q: players.b, towers, robots };
@@ -106,16 +107,18 @@ test('player right-click and Q damage towers; last destroyed tower ends match an
   assert.deepEqual(aim(p), pos); assert.equal(p.hp, hp);
 });
 
-test('respawn is five seconds plus five per own destroyed tower, including destruction while dead', () => {
+test('respawn is five seconds plus five per own destroyed tower, fixed at death even when a tower is destroyed during countdown', () => {
   const { match, a, b, p, q, towers } = setup();
   place(p, 0, 0); place(q, 1, 0); p.hp = CFG.qDmg;
   b.send('q', aim(p));
   assert.equal(p.dead, true); assert.equal(p.respawn, 5);
+  ticks(match, TICK * 2);
+  const remaining = p.respawn;
   const t = towers['t0-2'];
   place(q, t.x + 3, t.z); q.qCd = 0; t.hp = CFG.qDmg;
   b.send('q', aim(t));
-  assert.equal(p.respawn, 10);
-  ticks(match, TICK * 9); assert.equal(p.dead, true);
+  assert.equal(p.respawn, remaining);
+  ticks(match, TICK * 2); assert.equal(p.dead, true);
   ticks(match, TICK + 1); assert.equal(p.dead, false); assert.equal(p.hp, CFG.maxHp);
   assert.deepEqual(aim(p), MAP.spawns[0]);
   place(p, 0, 0); place(q, 1, 0); p.hp = CFG.qDmg; q.qCd = 0;
@@ -295,15 +298,15 @@ test('Alex doubles Q and normal damage against towers and summoned units, never 
   const { match, a, p, q, towers, robots } = setup();
   const tower = towers['t1-2'];
   place(p, tower.x - 3, tower.z); a.send('q', aim(tower));
-  assert.equal(tower.hp, CFG.tower.hp - 56);
-  assert.equal(a.events.fx.boosted, true); assert.equal(a.events.hit.dmg, 56); assert.equal(a.events.hit.boosted, true);
+  assert.equal(tower.hp, CFG.tower.hp - 46);
+  assert.equal(a.events.fx.boosted, true); assert.equal(a.events.hit.dmg, 46); assert.equal(a.events.hit.boosted, true);
   robots.target = { id: 'target', slot: 1, owner: q.id, x: 1, z: 0, radius: 0.4, hp: 100, maxHp: 100, life: 20, face: 0, atkCd: 100, bush: -1, stun: 0 };
   place(p, 0, 0); p.qCd = 0; place(q, -6, 0);
-  a.send('q', { x: 1, z: 0 }); assert.equal(robots.target.hp, 44);
-  p.atkCd = 0; a.send('chase', { id: 'target' }); match.tick(); assert.equal(robots.target.hp, 24);
+  a.send('q', { x: 1, z: 0 }); assert.equal(robots.target.hp, 54);
+  p.atkCd = 0; a.send('chase', { id: 'target' }); match.tick(); assert.equal(robots.target.hp, 34);
   delete robots.target;
   place(q, 1, 0); p.qCd = 0; a.send('q', aim(q));
-  assert.equal(q.hp, CFG.maxHp - 28);
+  assert.equal(q.hp, CFG.maxHp - 23);
   assert.equal(a.events.hit.boosted, false);
 });
 
@@ -345,11 +348,12 @@ test('Bastion guard halves incoming damage for two seconds and expires', () => {
   const match = createMatch(), a = socket('a'), b = socket('b'); match.connect(a); match.connect(b);
   a.send('selectCharacter', { id: 'alex' }); a.send('confirmCharacter');
   b.send('selectCharacter', { id: 'bastion' }); b.send('confirmCharacter');
+  match.state.environment.enabled = false;
   const p = match.state.players.a, q = match.state.players.b;
   place(p, 0, 0); place(q, 1, 0);
-  b.send('dash', aim(p)); a.send('q', aim(q)); assert.equal(q.hp, 280 - 14);
+  b.send('dash', aim(p)); a.send('q', aim(q)); assert.equal(q.hp, 280 - 11.5);
   ticks(match, TICK * 2 + 1); assert.equal(q.shield, 0);
-  p.qCd = 0; a.send('q', aim(q)); assert.equal(q.hp, 280 - 14 - 28);
+  p.qCd = 0; a.send('q', aim(q)); assert.equal(q.hp, 280 - 11.5 - 23);
 });
 
 function assertAlexSeparated(match) {
@@ -447,7 +451,7 @@ test('Alex minions slide out of overlap when pressed directly against a wall', (
   assert.ok(Math.abs(r.x) <= MAP.half - 1 && Math.abs(r.z) <= MAP.half - 1);
 });
 
-test('Alex E waits for click confirmation, leaps, then hits for 50 damage and one second stun with a 30 second cooldown', () => {
+test('Alex E waits for click confirmation, leaps, then hits for 45 damage and one second stun with a 30 second cooldown', () => {
   const { match, a, p, q } = setup(); place(p, 0, 0); place(q, 5, 0);
   a.send('dash', { x: 4, z: 0 }); match.tick();
   assert.equal(p.aiming, true); assert.equal(p.eCd, 0); assert.deepEqual(aim(p), { x: 0, z: 0 });
@@ -456,7 +460,7 @@ test('Alex E waits for click confirmation, leaps, then hits for 50 damage and on
   a.send('move', { x: -10, z: 0 }); a.send('q', aim(q)); a.send('c');
   assert.equal(p.qCd, 0); assert.equal(Object.keys(match.state.robots).length, 0);
   ticks(match, 7); assert.equal(p.leap, null); assert.equal(p.air, 0);
-  assert.deepEqual(aim(p), { x: 4, z: 0 }); assert.equal(q.hp, 150); assert.ok(q.stun > 0.9 && q.stun <= 1);
+  assert.deepEqual(aim(p), { x: 4, z: 0 }); assert.equal(q.hp, 155); assert.ok(q.stun > 0.9 && q.stun <= 1);
   a.send('dash'); assert.equal(p.aiming, false);
 });
 
@@ -587,4 +591,148 @@ test('Bastion shield reduces Magic Scout damage to 15 while preserving its contr
   const { match, a, b, p, q } = setup(false, ['mira', 'bastion']); place(p, 0, 0); place(q, 5, 0);
   b.send('dash'); a.send('c', aim(q)); ticks(match, 3);
   assert.equal(q.hp, 280 - 15); assert.equal(q.stun, 1.5); assert.ok(q.pull);
+});
+
+test('Lucia passive heals ten percent of actual enemy character damage, not minion or tower damage', () => {
+  const { match, a, p, q, robots, towers } = setup(false, ['lucia', 'alex']);
+  place(p, 0, 0); place(q, 1.5, 0); p.hp = 100;
+  a.send('chase', { id: q.id }); match.tick(); assert.equal(q.hp, 190); assert.equal(p.hp, 101);
+  place(q, 20, 20); p.target = null; p.atkCd = 0; p.hp = 100;
+  robots.guard = { id: 'guard', owner: q.id, character: 'bastion', slot: 1, radius: 0.4, hp: 100, life: 20,
+    cfg: { ...CFG.robot, speed: 0 }, x: 1.5, z: 0, face: 0, atkCd: 100, stun: 0, bush: -1 };
+  a.send('chase', { id: 'guard' }); match.tick(); assert.equal(p.hp, 100);
+  const tower = towers['t1-2']; place(p, tower.x - 2.5, tower.z); p.atkCd = 0;
+  a.send('chase', { id: tower.id }); match.tick(); assert.equal(p.hp, 100);
+});
+
+test('Lucia Q deals 50 and heals 30 plus passive on character hit, but never on a miss', () => {
+  const { match, a, p, q } = setup(false, ['lucia', 'alex']); place(p, 0, 0); place(q, 5, 0); p.hp = 100;
+  a.send('q', aim(q)); assert.equal(p.hp, 100); assert.equal(Object.keys(match.state.projectiles).length, 1);
+  ticks(match, 6); assert.equal(q.hp, 150); assert.equal(q.stun, 0); assert.equal(p.hp, 135);
+  p.qCd = 0; p.hp = 100; place(q, 5, 3); a.send('q', { x: 12, z: 0 }); ticks(match, 20);
+  assert.equal(p.hp, 100); assert.equal(q.hp, 150);
+});
+
+test('Lucia Q healing handles minions, damage reduction, lethal hits and maximum HP', () => {
+  const { match, a, b, p, q, robots } = setup(false, ['lucia', 'bastion']); place(p, 0, 0); place(q, 5, 0); p.hp = 100;
+  b.send('dash'); a.send('q', aim(q)); ticks(match, 6);
+  assert.equal(q.hp, 255); assert.equal(p.hp, 132.5);
+  p.qCd = 0; p.hp = 100; place(q, 20, 20);
+  robots.guard = { id: 'guard', owner: q.id, character: 'bastion', slot: 1, radius: 0.4, hp: 100, life: 20,
+    cfg: { ...CFG.robot, speed: 0 }, x: 4, z: 0, face: 0, atkCd: 100, stun: 0, bush: -1 };
+  a.send('q', { x: 4, z: 0 }); ticks(match, 6); assert.equal(robots.guard.hp, 50); assert.equal(p.hp, 130);
+  delete robots.guard; place(q, 5, 0); q.hp = 1; q.shield = 0; p.qCd = 0; p.hp = 100;
+  a.send('q', aim(q)); ticks(match, 6); assert.equal(p.hp, 130.1); assert.equal(p.kills, 1);
+  q.dead = false; q.hp = 200; p.qCd = 0; p.hp = 195;
+  a.send('q', aim(q)); ticks(match, 6); assert.equal(p.hp, p.cfg.maxHp);
+});
+
+test('Lucia E vanishes for one second, locks other actions and deals AoE only after warping', () => {
+  const { match, a, b, p, q, robots } = setup(false, ['lucia', 'alex']); place(p, 0, 0); place(q, 5, 0); p.hp = 100;
+  robots.guard = { id: 'guard', owner: q.id, character: 'bastion', slot: 1, radius: 0.4, hp: 100, life: 20,
+    cfg: { ...CFG.robot, speed: 0 }, x: 4, z: 2, face: 0, atkCd: 100, stun: 0, bush: -1 };
+  a.send('dash', { x: 4, z: 0 }); assert.ok(p.warp); assert.equal(p.eCd, 12);
+  a.send('move', { x: -10, z: 0 }); a.send('q', aim(q)); a.send('c');
+  assert.equal(p.dest, null); assert.equal(p.qCd, 0); assert.equal(p.cCd, 0);
+  ticks(match, 29); assert.deepEqual(aim(p), { x: 0, z: 0 }); assert.equal(q.hp, 200);
+  const hidden = b.events.state.players.find(e => e.id === p.id);
+  assert.equal(hidden.vis, false); assert.equal(hidden.x, undefined); assert.equal(hidden.warping, undefined);
+  assert.ok(a.events.state.players.find(e => e.id === p.id).warping > 0);
+  match.tick(); assert.deepEqual(aim(p), { x: 4, z: 0 }); assert.equal(p.warp, null);
+  assert.equal(q.hp, 160); assert.equal(robots.guard.hp, 60); assert.equal(p.hp, 104);
+});
+
+test('Lucia E rejects unsafe destinations and is interrupted by stun', () => {
+  const { match, a, b, p, q, towers } = setup(false, ['lucia', 'alex']); place(p, 0, 0); place(q, 1.5, 0);
+  for (const d of [{ x: 20, z: 0 }, { x: -8, z: 0 }, { x: NaN, z: 0 }]) {
+    a.send('dash', d); assert.equal(p.warp, null); assert.equal(p.eCd, 0);
+  }
+  const tower = towers['t1-2']; place(p, tower.x - 4, tower.z); a.send('dash', aim(tower)); assert.equal(p.warp, null);
+  place(p, 20, -19.5); a.send('dash', { x: 28, z: -19.5 }); assert.equal(p.warp, null);
+  place(p, 0, 0); a.send('dash', { x: 4, z: 0 }); match.tick(); b.send('q', aim(p));
+  assert.equal(p.warp, null); assert.equal(p.stun, 0.3); ticks(match, 30); assert.deepEqual(aim(p), { x: 0, z: 0 });
+});
+
+test('Lucia C hides coordinates for exactly five seconds and removes enemy chase and tower aggro', () => {
+  const { match, a, b, p, q, towers } = setup(false, ['lucia', 'alex']); place(p, 0, 0); place(q, 1.5, 0); p.hp = 100;
+  const tower = towers['t1-0']; tower.x = 0; tower.z = 3; tower.atkCd = 0;
+  b.send('chase', { id: p.id }); a.send('c'); ticks(match, 149);
+  assert.equal(p.hp, 100); assert.equal(q.target, null); assert.equal(p.cCd > 15, true);
+  const hidden = b.events.state.players.find(e => e.id === p.id);
+  assert.equal(hidden.vis, false);
+  for (const key of ['x', 'z', 'face', 'stealth', 'warping']) assert.equal(hidden[key], undefined);
+  assert.ok(a.events.state.players.find(e => e.id === p.id).stealth > 0);
+  match.tick(); assert.equal(p.stealth, 0); assert.equal(b.events.state.players.find(e => e.id === p.id).vis, true);
+});
+
+test('Lucia stays invisible when attacking, but can still be hit by area attacks', () => {
+  const { match, a, b, p, q } = setup(false, ['lucia', 'alex']); place(p, 0, 0); place(q, 1.5, 0); p.hp = 100;
+  a.send('c'); a.send('chase', { id: q.id }); match.tick();
+  assert.equal(q.hp, 190); assert.equal(p.hp, 101); assert.ok(p.stealth > 4.9);
+  assert.equal(b.events.state.players.find(e => e.id === p.id).vis, false);
+  p.target = null; b.send('q', aim(p)); assert.equal(p.hp, 78); assert.ok(p.stealth > 0);
+});
+
+test('Lucia C and E compose without leaking the warp destination, and expire on the original timer', () => {
+  const { match, a, b, p, q } = setup(false, ['lucia', 'alex']); place(p, 0, 0); place(q, 20, 20);
+  a.send('c'); a.send('dash', { x: 4, z: 0 }); ticks(match, 30);
+  assert.deepEqual(aim(p), { x: 4, z: 0 }); assert.ok(Math.abs(p.stealth - 4) < 1e-8);
+  assert.equal(b.events.state.players.find(e => e.id === p.id).x, undefined);
+  ticks(match, 120); assert.equal(p.stealth, 0); assert.equal(b.events.state.players.find(e => e.id === p.id).vis, true);
+});
+
+
+test('Mira basic attacks travel before hitting players and towers without scout control effects', () => {
+  const { match, a, p, q, towers } = setup(false, ['mira','alex']);
+  place(p, 0, 0); place(q, 6, 0);
+  a.send('chase', { id: q.id }); match.tick();
+  assert.equal(q.hp, 200); assert.equal(Object.values(match.state.projectiles)[0].kind, 'basic');
+  ticks(match, 5); assert.equal(q.hp, 190); assert.equal(q.stun, 0); assert.equal(q.pull, null);
+  p.target = null; p.atkCd = 0;
+  const tower = towers['t1-2']; place(p, tower.x-6, tower.z);
+  a.send('chase', { id: tower.id }); ticks(match, 7);
+  assert.equal(tower.hp, 290);
+});
+
+test('control zones heal only their owner, damage invaders and preserve spawn protection', () => {
+  const { match, p, q } = setup(); match.state.environment.enabled = true;
+  place(p, -2, 4); place(q, -1, 4); p.hp = q.hp = 100;
+  ticks(match, TICK);
+  assert.ok(Math.abs(p.hp - 108)<0.01); assert.ok(Math.abs(q.hp-88)<0.01);
+  place(q, MAP.spawns[1].x, MAP.spawns[1].z); q.hp = 100;
+  ticks(match, TICK); assert.ok(q.hp >= 180 - 1e-8);
+});
+
+test('central energy is shared, collectible once, shrinks only opposing territory and resets with the match', () => {
+  const { match, a, p } = setup(true); match.state.environment.enabled = true;
+  match.tick(); const orb = Object.values(match.state.energy)[0]; assert.ok(orb);
+  place(p, orb.x, orb.z); match.tick();
+  assert.equal(p.energy, 5); assert.equal(Object.keys(match.state.energy).length, 0);
+  assert.equal(a.events.state.control[0].boundary, 0); assert.equal(a.events.state.control[1].boundary, -0.75);
+  match.tick(); assert.equal(p.energy, 5);
+  a.send('restart'); assert.equal(p.energy, 0); assert.deepEqual(match.state.environment.totals, [0,0]);
+});
+
+test('monster camps spawn periodically, grant kill energy and respawn after defeat', () => {
+  const { match, a, p } = setup(true); match.state.environment.enabled = true;
+  ticks(match, TICK * 5); const { monsters, camps } = match.state;
+  assert.equal(Object.keys(monsters).length, 7);
+  const large = monsters['monster-0']; assert.ok(large.radius > p.radius); assert.ok(large.maxHp > p.cfg.maxHp);
+  const small = monsters['monster-2']; place(p, small.x+1, small.z); small.hp=1;
+  a.send('q', aim(small)); assert.equal(monsters[small.id], undefined); assert.equal(p.energy, 8);
+  assert.equal(a.killEvents.at(-1).victim.kind, 'monster'); assert.equal(p.kills, 0);
+  place(p, MAP.spawns[0].x, MAP.spawns[0].z); ticks(match, TICK*29); assert.equal(monsters[small.id], undefined);
+  ticks(match, TICK); assert.ok(monsters[small.id]); assert.equal(camps[2].timer, 0);
+});
+
+test('player, tower, minion and owner minion kills award energy exactly once', () => {
+  const { match, a, p, q, towers, robots } = setup();
+  place(p, 0, 0); place(q, 1, 0); q.hp=1; a.send('q', aim(q)); assert.equal(p.energy, 15);
+  p.qCd=0; const tower=towers['t1-2']; place(p,tower.x-3,tower.z); tower.hp=1;
+  a.send('q',aim(tower)); assert.equal(p.energy,40);
+  robots.victim={ id:'victim', slot:1, owner:q.id, x:1,z:0,radius:0.4,hp:1,life:20,face:0,atkCd:100,bush:-1,stun:0 };
+  place(p,0,0); p.qCd=0; a.send('q',{x:1,z:0}); assert.equal(p.energy,43);
+  a.send('c'); const minion=Object.values(robots)[0]; const target=towers['t1-1'];
+  place(minion,target.x-2,target.z); target.hp=1; match.tick(); assert.equal(p.energy,68);
+  match.tick(); assert.equal(p.energy,68);
 });

@@ -97,6 +97,12 @@
       case 'leapHit': tone(38, 0.3, 0.25 * v, 'sine', 0, effects, 23); noise(0.22, 0.23 * v, 500); break;
       case 'magic': tone(72, 0.23, 0.16 * v, 'sine', 0, effects, 100); tone(79, 0.18, 0.08 * v, 'triangle'); break;
       case 'magicHit': tone(96, 0.32, 0.17 * v, 'sine', 0, effects, 48); noise(0.15, 0.1 * v, 3200); break;
+      case 'abyss': tone(57, 0.35, 0.15 * v, 'sawtooth', 0, effects, 39); tone(76, 0.2, 0.08 * v, 'sine'); break;
+      case 'abyssHit': tone(45, 0.3, 0.18 * v, 'triangle', 0, effects, 26); noise(0.2, 0.12 * v, 700); break;
+      case 'warp': tone(40, 0.6, 0.14 * v, 'sine', 0, effects, 88); break;
+      case 'warpHit': tone(35, 0.4, 0.2 * v, 'sawtooth', 0, effects, 23); noise(0.25, 0.15 * v, 900); break;
+      case 'stealth': tone(76, 0.5, 0.1 * v, 'sine', 0, effects, 40); break;
+      case 'heal': phrase([76, 81], 0.07, 0.07 * v); break;
       case 'wind': tone(64, 0.4, 0.13 * v, 'sine', 0, effects, 88); noise(0.35, 0.13 * v, 2800); break;
       case 'shield': phrase([60, 67, 72], 0.065, 0.12 * v); break;
       case 'summon': phrase([57, 64, 69], 0.075, 0.12 * v, 'square'); break;
@@ -183,6 +189,7 @@
     else sound(d.kind, volume, source?.character);
   });
   session.on('hit', d => sound('hit', d.id === myId ? 0.9 : distanceVolume(entity(d.id)) * 0.45));
+  session.on('heal', d => { if (d.id === myId) sound('heal'); });
   session.on('kill', d => {
     if (d.victim.kind === 'tower') sound('tower', 0.8);
     else if (d.victim.kind === 'player') sound(d.victim.id === myId ? 'death' : 'kill');

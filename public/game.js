@@ -140,6 +140,15 @@ function makeHuman(color, character) {
   } else if (character === 'bastion') {
     part(B(0.75, 1.1, 0.18), accent, 0, -0.5, 0.2, armL);
     part(B(1, 0.25, 0.6), accent, 0, 1.8, 0);
+  } else if (character === 'lucia') {
+    for (const side of [-1, 1]) {
+      const horn = part(new THREE.ConeGeometry(0.14, 0.65, 8), 0xb781e8, side * 0.24, 2.45, 0);
+      horn.rotation.z = -side * 0.35;
+      const wing = part(new THREE.ConeGeometry(0.85, 1.25, 3), 0x41204f, side * 0.8, 1.5, -0.3);
+      wing.rotation.z = side * 1.1; wing.scale.z = 0.15;
+    }
+    const gem = part(new THREE.IcosahedronGeometry(0.18, 1), 0xe86cff, 0, 1.5, 0.26);
+    gem.material.emissive.setHex(0x952bba);
   }
   return { g, mats, legL, legR, armL, armR };
 }
@@ -193,12 +202,14 @@ function makeBar() {
   bar.fill = fg;
   return bar;
 }
-function makeProjectile() {
+function makeProjectile(character) {
   const g = new THREE.Group(), mats = [];
+  const color = character === 'lucia' ? 0xc357ff : 0x76ffff;
   for (const [geo, z] of [[new THREE.IcosahedronGeometry(0.32, 1), 0], [new THREE.BoxGeometry(0.16, 0.16, 1.4), -0.8]]) {
-    const mesh = add(geo, 0x76ffff, 0, 0.8, z, g, false);
-    mesh.material.emissive.setHex(0x42cccc); mats.push(mesh.material);
+    const mesh = add(geo, color, 0, 0.8, z, g, false);
+    mesh.material.emissive.setHex(character === 'lucia' ? 0x772299 : 0x42cccc); mats.push(mesh.material);
   }
+  if (character === 'lucia') g.scale.setScalar(1.4);
   return { g, mats };
 }
 
@@ -219,7 +230,7 @@ socket.on('kill', d => {
   const time = document.createElement('time'), killer = document.createElement('span'), victim = document.createElement('span');
   const seconds = Math.floor(d.time);
   time.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-  const label = e => e.id === myId ? `自分（${e.name}）` : `${e.slot === mySlot ? '味方' : '敵'} ${e.name}`;
+  const label = e => e.kind === 'monster' ? e.name : e.id === myId ? `自分（${e.name}）` : `${e.slot === mySlot ? '味方' : '敵'} ${e.name}`;
   killer.className = 'killer'; killer.textContent = label(d.attacker);
   victim.textContent = ` → ${label(d.victim)}${d.victim.kind === 'tower' ? 'を破壊' : 'を撃破'}`;
   entry.append(time, killer, victim); $('killFeed').prepend(entry);
@@ -232,6 +243,40 @@ socket.on('kill', d => {
   later(() => entry.remove(), 8000);
 });
 
+function makeMonster(large) {
+  const h = makeHuman(large ? 0x9c559e : 0x9b8955, 'lucia');
+  h.g.scale.setScalar(large ? 2 : 0.95);
+  return h;
+}
+function makeEnergy() {
+  const g = new THREE.Group();
+  add(new THREE.OctahedronGeometry(0.35), 0xffd85b, 0, 0, 0, g, false);
+  return { g, mats: [] };
+}
+const controlRoot = new THREE.Group(); scene.add(controlRoot);
+let controlSignature = '';
+function updateControlZones(zones) {
+  const signature = JSON.stringify(zones.map(z => [z.slot, z.boundary]));
+  if (signature === controlSignature) return;
+  controlSignature = signature;
+  [...controlRoot.children].forEach(disposeObject);
+  for (const zone of zones) {
+    const sign = zone.slot === 0 ? 1 : -1, b = zone.boundary;
+    const corners = [[-30,-30], [30,-30], [30,30], [-30,30]], polygon = [];
+    const value = p => sign*(p[0]-p[1])-b;
+    for (let i=0; i<4; i++) {
+      const a = corners[i], c = corners[(i+1)%4], va = value(a), vc = value(c);
+      if (va<=0) polygon.push(a);
+      if ((va<=0)!==(vc<=0)) { const t=va/(va-vc); polygon.push([a[0]+(c[0]-a[0])*t,a[1]+(c[1]-a[1])*t]); }
+    }
+    if (polygon.length<3) continue;
+    const shape = new THREE.Shape(polygon.map(p => new THREE.Vector2(p[0],-p[1])));
+    const material = new THREE.MeshBasicMaterial({color: zone.slot === mySlot ? ALLY : ENEMY, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide});
+    const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape),material); mesh.rotation.x=-Math.PI/2; mesh.position.y=0.16; controlRoot.add(mesh);
+    const points = polygon.map(p => new THREE.Vector3(p[0],0.18,p[1])); points.push(points[0]);
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({color: zone.slot === mySlot ? 0x6cd7ff : 0xff8176})); controlRoot.add(line);
+  }
+}
 function ensure(s, kind) {
   if (ents[s.id] && ents[s.id].s.character !== s.character) {
     disposeObject(ents[s.id].g);
@@ -240,14 +285,15 @@ function ensure(s, kind) {
   }
   if (ents[s.id]) return ents[s.id];
   const color = s.slot === mySlot ? ALLY : ENEMY;
-  const h = kind === 'projectile' ? makeProjectile() : kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : makeHuman(color, s.character);
+  const h = kind === 'energy' ? makeEnergy() : kind === 'monster' ? makeMonster(s.large) : kind === 'projectile' ? makeProjectile(s.character) : kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : makeHuman(color, s.character);
   h.g.position.set(s.x, 0, s.z);
   scene.add(h.g);
-  return (ents[s.id] = Object.assign(h, { kind, bar: kind === 'robot' || kind === 'tower' ? makeBar() : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
+  return (ents[s.id] = Object.assign(h, { kind, bar: kind === 'monster' || kind === 'robot' || kind === 'tower' ? makeBar() : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
 }
 
 socket.on('init', d => {
   skillAim.cancel();
+  updateControlZones([]);
   clearKillFeed();
   clearKeys();
   [...mapRoot.children].forEach(disposeObject);
@@ -264,6 +310,8 @@ socket.on('init', d => {
   camera.position.set(sp.x + CAM_OFF.x, CAM_OFF.y, sp.z + CAM_OFF.z);
   camera.lookAt(sp.x, 0, sp.z);
   buildMap(d.map, mySlot);
+  const energyRing = add(new THREE.RingGeometry(2.8, 3, 64), 0xffd85b, 0, 0.2, 0, mapRoot, false);
+  energyRing.rotation.x = -Math.PI / 2;
   $('msg').textContent = '';
 });
 socket.on('full', () => { $('msg').textContent = '満員です（2人まで）'; });
@@ -276,6 +324,9 @@ socket.on('state', st => {
   st.players.forEach(s => { if (s.vis) { seen.add(s.id); ensure(s, 'human').s = s; } });   // ブッシュ内の敵は vis=false で座標なし
   st.robots.forEach(s => { seen.add(s.id); ensure(s, 'robot').s = s; });
   st.towers.forEach(s => { seen.add(s.id); ensure(s, 'tower').s = s; });
+  (st.monsters || []).forEach(s => { seen.add(s.id); ensure(s, 'monster').s = s; });
+  (st.energy || []).forEach(s => { seen.add(s.id); ensure({ ...s, slot: 2, face: 0 }, 'energy').s = { ...s, slot: 2, face: 0 }; });
+  updateControlZones(st.control || []);
   st.projectiles.forEach(s => { seen.add(s.id); ensure(s, 'projectile').s = s; });
   skillAim.update();
   Object.keys(ents).forEach(id => {
@@ -292,14 +343,17 @@ socket.on('fx', d => {
   if (!e) return;
   e.swing = 0.25;
   e.attackBoost = !!d.boosted;
-  const color = d.boosted ? 0xff3535 : ['magic', 'magicHit', 'wind'].includes(d.kind) ? 0x76ffff : d.kind === 'shield' ? 0x72bbff : 0xe6c15a;
+  const color = d.boosted ? 0xff3535 : ['abyss', 'abyssHit', 'warp', 'warpHit', 'stealth'].includes(d.kind) ? 0xbb55ff : ['magic', 'magicHit', 'wind'].includes(d.kind) ? 0x76ffff : d.kind === 'shield' ? 0x72bbff : 0xe6c15a;
   if (e.kind === 'tower') arc(d.x, d.z, d.face, cfg.tower.range, 0.06, color);
   else if (d.kind === 'q') arc(d.x, d.z, d.face, d.range, d.halfArc, color);
   else if (d.kind === 'atk') arc(d.x, d.z, d.face, e.kind === 'robot' ? 1.8 : 2.4, 0.55, color);
   else if (d.kind === 'shield') arc(d.x, d.z, d.face, 2, Math.PI, color);
   else if (d.kind === 'leapHit') arc(d.x, d.z, d.face, d.range, Math.PI, color);
   else if (['magicHit', 'wind'].includes(d.kind)) arc(d.x, d.z, d.face, 1.5, Math.PI, color);
+  else if (d.kind === 'warpHit') arc(d.x, d.z, d.face, d.range, Math.PI, color);
+  else if (['warp', 'stealth', 'abyssHit'].includes(d.kind)) arc(d.x, d.z, d.face, 1.5, Math.PI, color);
 });
+socket.on('heal', d => { const e = ents[d.id]; if (e) dmgText(e, `+${d.amount}`, false, '#8bffae'); });
 
 socket.on('hit', d => {
   const e = ents[d.id];
@@ -326,14 +380,16 @@ function hud(st) {
   $('score').textContent = `${m.kills} - ${f ? f.kills : 0}`;
   const own = st.towers.filter(t => t.slot === mySlot && !t.dead).length;
   const enemy = st.towers.filter(t => t.slot !== mySlot && !t.dead).length;
-  $('objective').textContent = `タワー残り　自陣 ${own}/5　敵陣 ${enemy}/5`;
-  $('status').textContent = `${st.solo ? 'オフライン' : 'オンライン対戦'}｜${character?.name || ''}｜復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}${m.shield > 0 ? '｜ダメージ50%軽減中' : ''}${m.speedBoost > 0 ? `｜移動速度2倍 ${m.speedBoost.toFixed(1)}秒` : ''}`;
+  $('objective').textContent = `タワー残り　自陣 ${own}/5　敵陣 ${enemy}/5｜エネルギー ${m.energy || 0}｜自陣領域 ${Math.round(100 * (1 + (st.control?.[mySlot]?.boundary || 0) / 60) ** 2)}%`;
+  $('status').textContent = `${st.solo ? 'オフライン' : 'オンライン対戦'}｜${character?.name || ''}｜次回の復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}${m.shield > 0 ? '｜ダメージ50%軽減中' : ''}${m.speedBoost > 0 ? `｜移動速度2倍 ${m.speedBoost.toFixed(1)}秒` : ''}`;
   $('status').title = character?.passive || '';
+  if (m.stealth > 0) $('status').textContent += `｜透明化 ${m.stealth.toFixed(1)}秒`;
   $('msg').textContent = st.phase === 'finished' ? (st.winner === mySlot ? '勝利！ 敵タワーを全て破壊しました' : '敗北 — 自陣タワーが全て破壊されました')
     : st.phase === 'waiting' ? '対戦相手を待っています…（1人用テストも選べます）'
     : m.dead ? `リスポーンまで ${Math.ceil(m.respawn)}秒`
     : m.stun > 0 ? 'スタン中'
-    : skillAim.current ? `${character.skills[skillAim.current.key].name}：キーを離すか左クリックで発動（右クリック・Escでキャンセル）`
+    : m.warping > 0 ? `魔影転移… ${m.warping.toFixed(1)}秒`
+    : skillAim.current ? `${character.skills[skillAim.current.key].name}：${gameControls.mode === 'hold' ? 'キーを離すか左クリックで発動' : '左クリックで発動・同じキーでキャンセル'}（右クリック・Escでキャンセル）`
     : m.recall > 0 ? `リコール中… ${m.recall.toFixed(1)}秒（移動・攻撃・被ダメージで中断）` : '';
 }
 
@@ -364,12 +420,13 @@ function marker(p) {
   fxs.push({ g: m, m: mat, t: 0, life: 0.4 });
 }
 
-function dmgText(e, n, boosted = false) {
+function dmgText(e, n, boosted = false, color = null) {
   const v = new THREE.Vector3(e.x, e.kind === 'tower' ? 4.8 : e.kind === 'robot' ? 1.9 : 2.8, e.z).project(camera);
   const d = document.createElement('div');
   d.className = 'dmg';
   d.textContent = n;
   if (boosted) d.style.color = '#ff4545';
+  if (color) d.style.color = color;
   d.style.left = `${(v.x * 0.5 + 0.5) * innerWidth}px`;
   d.style.top = `${(-v.y * 0.5 + 0.5) * innerHeight}px`;
   document.body.appendChild(d);
@@ -397,13 +454,16 @@ skillLineMesh.rotation.x = -Math.PI / 2; skillLine.add(skillLineMesh);
 const skillArrow = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.7, 3), new THREE.MeshBasicMaterial({ color: 0x9bffff }));
 skillArrow.rotation.x = Math.PI / 2; skillLine.add(skillArrow); skillLine.visible = false; scene.add(skillLine);
 const skillAim = createSkillAim({
+  mode: () => gameControls.mode,
   self: () => ents[myId]?.s,
   playing: () => phase === 'playing',
   point: () => groundAt(mouse),
   validLeap: validLeapPoint,
-  emit: (event, data) => { if (event === 'leap') clearKeys(); socket.emit(event, data); },
+  emit: (event, data) => { if (event === 'leap' || (event === 'dash' && data)) clearKeys(); socket.emit(event, data); },
   changed: current => {
     canvas.style.cursor = current ? 'crosshair' : '';
+    const color = current?.character === 'lucia' ? 0xc58cff : 0x72d8ff;
+    skillAreaMesh.material.color.setHex(color); skillLineMesh.material.color.setHex(color); skillArrow.material.color.setHex(color);
     if (current?.kind === 'cone') {
       skillAreaMesh.geometry.dispose();
       skillAreaMesh.geometry = new THREE.CircleGeometry(1, 64, -cfg.qArc, cfg.qArc * 2);
@@ -428,11 +488,12 @@ function clearKeys() {
   heldKeys.clear();
   if (myId && socket.connected) sendKeys();
 }
+addEventListener('controlschange', () => { skillAim.cancel(); clearKeys(); });
 addEventListener('blur', () => { skillAim.cancel(); clearKeys(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { skillAim.cancel(); clearKeys(); } });
 document.addEventListener('pointerdown', ev => { if (ev.target !== canvas) skillAim.cancel(); }, { capture: true });
 addEventListener('keyup', ev => {
-  const key = ev.key.toLowerCase();
+  const key = gameControls.action(ev.code);
   if (heldKeys.delete(key)) sendKeys();
   if (ev.target.closest('button, a, input, textarea, select, [contenteditable]')) skillAim.cancel();
   else skillAim.release(key);
@@ -456,7 +517,7 @@ canvas.addEventListener('mousedown', ev => {
   }
   if (ev.button !== 2) return;
   const g = groundAt(ev);
-  const enemies = Object.values(ents).filter(e => e.kind !== 'projectile' && e.s.slot !== mySlot && !e.s.dead);
+  const enemies = Object.values(ents).filter(e => !['projectile', 'energy'].includes(e.kind) && e.s.slot !== mySlot && !e.s.dead);
   // タワーの上部をクリックしても、そのタワーを選択する。
   const picked = ray.intersectObjects(enemies.map(e => e.g), true)[0];
   let foe = picked && enemies.find(e => {
@@ -473,11 +534,13 @@ canvas.addEventListener('mousedown', ev => {
 });
 addEventListener('keydown', ev => {
   if (ev.repeat || ev.ctrlKey || ev.metaKey || ev.altKey || !myId || phase !== 'playing' || ev.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
-  const k = ev.key.toLowerCase();
-  if (k === 'escape') { skillAim.cancel(); return; }
-  if ('wasd'.includes(k) && k.length === 1) {
+  const k = gameControls.action(ev.code);
+  if (ev.code === 'Escape') { skillAim.cancel(); return; }
+  if (['w', 'a', 's', 'd'].includes(k)) {
     ev.preventDefault(); heldKeys.add(k); sendKeys();
-  } else if (['q', 'c'].includes(k) || (k === 'e' && ents[myId]?.s.character === 'alex')) {
+  } else if (k === 'c' && ents[myId]?.s.character === 'lucia') {
+    skillAim.cancel(); socket.emit('c');
+  } else if (['q', 'c'].includes(k) || (k === 'e' && ['alex', 'lucia'].includes(ents[myId]?.s.character))) {
     ev.preventDefault(); skillAim.begin(k);
   } else if (k === 'e') { skillAim.cancel(); socket.emit('dash'); }
   else if (k === 'b') { skillAim.cancel(); clearKeys(); socket.emit('recall'); }
@@ -498,6 +561,7 @@ function frame() {
 
     e.swing = Math.max(0, e.swing - dt);
     e.flash = Math.max(0, e.flash - dt);
+    if (e.kind === 'energy') { e.g.position.set(e.x, 0.8 + Math.sin(t*3)*0.15, e.z); e.g.rotation.y += dt; continue; }
     if (e.kind === 'projectile') { e.g.position.set(e.x, 0, e.z); e.g.rotation.y = e.face; continue; }
     if (e.kind === 'tower') {
       e.g.scale.y = s.dead ? 0.12 : 1;
@@ -512,7 +576,8 @@ function frame() {
     if (s.moving) e.phase += dt * 11;
     const w = s.moving ? Math.sin(e.phase) * 0.9 : 0;
 
-    e.g.visible = !s.dead;
+    e.g.visible = !s.dead && !(s.warping > 0);
+    e.mats.forEach(m => { m.transparent = s.stealth > 0; m.opacity = s.stealth > 0 ? 0.35 : 1; });
     e.g.position.set(e.x, (s.air || 0) + (s.moving ? Math.abs(Math.sin(e.phase)) * 0.08 : 0), e.z);
     e.g.rotation.y = e.face;
     e.legL.rotation.x = w;
@@ -522,7 +587,7 @@ function frame() {
     e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : s.stun > 0 ? 0x776600 : e.swing > 0 && e.attackBoost ? 0xaa1010 : s.shield > 0 ? 0x224477 : s.speedBoost > 0 ? 0x226655 : 0x000000));
 
     if (e.bar) {
-      e.bar.position.set(e.x, 1.85, e.z);
+      e.bar.position.set(e.x, e.kind === 'monster' ? (s.large ? 4.5 : 2.2) : 1.85, e.z);
       e.bar.quaternion.copy(camera.quaternion);
       e.bar.fill.scale.x = Math.max(0.001, s.hp / s.maxHp);
     }
@@ -530,25 +595,25 @@ function frame() {
 
   const me = ents[myId];
   const targeting = skillAim.current, showingAim = !!targeting && !!me && phase === 'playing';
-  leapRangeRing.visible = showingAim && ['leap', 'cone'].includes(targeting.kind);
-  leapPointRing.visible = showingAim && targeting.kind === 'leap';
+  leapRangeRing.visible = showingAim && ['leap', 'warp', 'cone'].includes(targeting.kind);
+  leapPointRing.visible = showingAim && ['leap', 'warp'].includes(targeting.kind);
   skillArea.visible = showingAim && targeting.kind === 'cone';
   skillLine.visible = showingAim && ['projectile', 'summon'].includes(targeting.kind);
   if (showingAim) {
     const point = groundAt(mouse);
     const face = Math.atan2(point.x - me.x, point.z - me.z);
     leapRangeRing.position.set(me.x, 0.14, me.z);
-    leapRangeRing.scale.setScalar(targeting.kind === 'leap' ? cfg.leapRange : cfg.qRange);
-    if (targeting.kind === 'leap') {
+    leapRangeRing.scale.setScalar(['leap', 'warp'].includes(targeting.kind) ? cfg.leapRange : cfg.qRange);
+    if (['leap', 'warp'].includes(targeting.kind)) {
       leapPointRing.position.set(point.x, 0.15, point.z); leapPointRing.scale.setScalar(cfg.leapHitRange);
       leapPointRing.material.color.setHex(validLeapPoint(point, me.s) ? 0x8be0a0 : 0xff4545);
     } else if (targeting.kind === 'cone') {
       skillArea.position.set(me.x, 0.13, me.z); skillArea.rotation.y = face - Math.PI / 2;
       skillArea.scale.setScalar(cfg.qRange);
     } else {
-      const length = targeting.kind === 'projectile' ? cfg.magicRange : 2.4;
+      const length = targeting.kind === 'projectile' ? targeting.key === 'q' ? cfg.qRange : cfg.magicRange : 2.4;
       skillLine.position.set(me.x, 0.15, me.z); skillLine.rotation.y = face;
-      skillLineMesh.scale.set(targeting.kind === 'projectile' ? cfg.magicRadius * 2 : 0.5, length, 1);
+      skillLineMesh.scale.set(targeting.kind === 'projectile' ? (targeting.key === 'q' ? cfg.qRadius : cfg.magicRadius) * 2 : 0.5, length, 1);
       skillLineMesh.position.z = length / 2; skillArrow.position.set(0, 0, length);
     }
   }

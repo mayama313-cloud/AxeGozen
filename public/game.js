@@ -1,5 +1,4 @@
-const soloMode = new URLSearchParams(location.search).get('mode') === 'solo';
-const socket = io({ query: { mode: soloMode ? 'solo' : 'online' } });
+const socket = window.gameSession;
 const $ = id => document.getElementById(id);
 const canvas = $('gameCanvas');
 const ALLY = 0x2f7fb0, ENEMY = 0xb0413a;   // 自分=青 / 相手=赤（どちらのプレイヤーから見ても同じ）
@@ -115,7 +114,7 @@ function buildMap({ half, obst, spawns, bushes: bushList }, mySlot) {
 }
 
 // ---------- ヒト型キャラクター（箱と球の組み合わせ） ----------
-function makeHuman(color) {
+function makeHuman(color, character) {
   const g = new THREE.Group(), mats = [];
   const B = (w, h, d) => new THREE.BoxGeometry(w, h, d);
   const part = (geo, c, x, y, z, parent = g) => {
@@ -134,6 +133,14 @@ function makeHuman(color) {
   part(new THREE.SphereGeometry(0.31, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), 0x2b2b33, 0, 2.04, 0); // ヘルメット
   part(B(0.3, 0.06, 0.08), 0xe6c15a, 0, -0.8, 0, armR);                          // ツバ
   part(B(0.08, 1.2, 0.04), 0xdfe6ee, 0, -1.4, 0, armR);                          // 剣身
+  const accent = parseInt((ArenaWorld.characterFor(character)?.color || '#ffffff').slice(1), 16);
+  if (character === 'mira') {
+    part(new THREE.ConeGeometry(0.45, 0.7, 8), accent, 0, 2.45, 0);
+    part(new THREE.SphereGeometry(0.23, 12, 8), accent, 0, -1.95, 0, armR);
+  } else if (character === 'bastion') {
+    part(B(0.75, 1.1, 0.18), accent, 0, -0.5, 0.2, armL);
+    part(B(1, 0.25, 0.6), accent, 0, 1.8, 0);
+  }
   return { g, mats, legL, legR, armL, armR };
 }
 
@@ -194,9 +201,14 @@ const ents = {};    // 見えているプレイヤー / ロボット（id → �
 const fxs = [];
 
 function ensure(s, kind) {
+  if (ents[s.id] && ents[s.id].s.character !== s.character) {
+    disposeObject(ents[s.id].g);
+    if (ents[s.id].bar) disposeObject(ents[s.id].bar);
+    delete ents[s.id];
+  }
   if (ents[s.id]) return ents[s.id];
   const color = s.slot === mySlot ? ALLY : ENEMY;
-  const h = kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : makeHuman(color);
+  const h = kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : makeHuman(color, s.character);
   h.g.position.set(s.x, 0, s.z);
   scene.add(h.g);
   return (ents[s.id] = Object.assign(h, { kind, bar: kind !== 'human' ? makeBar() : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
@@ -223,6 +235,8 @@ socket.on('full', () => { $('msg').textContent = '満員です（2人まで）';
 
 socket.on('state', st => {
   phase = st.phase;
+  const self = st.players.find(p => p.id === myId);
+  if (self?.character) cfg = ArenaWorld.configFor(self.character);
   const seen = new Set();
   st.players.forEach(s => { if (s.vis) { seen.add(s.id); ensure(s, 'human').s = s; } });   // ブッシュ内の敵は vis=false で座標なし
   st.robots.forEach(s => { seen.add(s.id); ensure(s, 'robot').s = s; });
@@ -240,23 +254,32 @@ socket.on('fx', d => {
   const e = ents[d.id];
   if (!e) return;
   e.swing = 0.25;
-  if (e.kind === 'tower') arc(d.x, d.z, d.face, cfg.tower.range, 0.06);
-  if (d.kind === 'q') arc(d.x, d.z, d.face, cfg.qRange, cfg.qArc);
+  e.attackBoost = !!d.boosted;
+  const color = d.boosted ? 0xff3535 : d.kind === 'shield' ? 0x72bbff : 0xe6c15a;
+  if (e.kind === 'tower') arc(d.x, d.z, d.face, cfg.tower.range, 0.06, color);
+  else if (d.kind === 'q') arc(d.x, d.z, d.face, d.range, d.halfArc, color);
+  else if (d.kind === 'atk') arc(d.x, d.z, d.face, e.kind === 'robot' ? 1.8 : 2.4, 0.55, color);
+  else if (d.kind === 'shield') arc(d.x, d.z, d.face, 2, Math.PI, color);
 });
 
 socket.on('hit', d => {
   const e = ents[d.id];
   if (!e) return;
   e.flash = 0.12;
-  dmgText(e, d.dmg);
+  dmgText(e, d.dmg, d.boosted);
 });
 
 function hud(st) {
   const list = st.players;
   const m = list.find(s => s.id === myId), f = list.find(s => s.id !== myId);
   if (!m || !cfg) return;
-  $('playerHpFill').style.width = `${Math.max(0, m.hp / cfg.maxHp) * 100}%`;
-  $('enemyHpFill').style.width = f ? `${Math.max(0, f.hp / cfg.maxHp) * 100}%` : '0%';
+  $('playerHpFill').style.width = `${Math.max(0, m.hp / m.maxHp) * 100}%`;
+  $('enemyHpFill').style.width = f ? `${Math.max(0, f.hp / f.maxHp) * 100}%` : '0%';
+  const character = ArenaWorld.characterFor(m.character);
+  if (character) for (const key of ['q', 'e', 'c']) {
+    $(key + 'Label').textContent = character.skills[key].name;
+    $(key + 'Skill').title = character.skills[key].text;
+  }
   $('qCooldown').style.height = `${(m.qCd / cfg.qCd) * 100}%`;
   $('eCooldown').style.height = `${(m.eCd / cfg.eCd) * 100}%`;
   $('cCooldown').style.height = `${(m.cCd / cfg.cCd) * 100}%`;
@@ -265,7 +288,8 @@ function hud(st) {
   const own = st.towers.filter(t => t.slot === mySlot && !t.dead).length;
   const enemy = st.towers.filter(t => t.slot !== mySlot && !t.dead).length;
   $('objective').textContent = `タワー残り　自陣 ${own}/5　敵陣 ${enemy}/5`;
-  $('status').textContent = `${st.solo ? '1人用テスト' : 'オンライン対戦'}｜復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}`;
+  $('status').textContent = `${st.solo ? 'オフライン' : 'オンライン対戦'}｜${character?.name || ''}｜復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}${m.shield > 0 ? '｜ダメージ50%軽減中' : ''}`;
+  $('status').title = character?.passive || '';
   $('msg').textContent = st.phase === 'finished' ? (st.winner === mySlot ? '勝利！ 敵タワーを全て破壊しました' : '敗北 — 自陣タワーが全て破壊されました')
     : st.phase === 'waiting' ? '対戦相手を待っています…（1人用テストも選べます）'
     : m.dead ? `リスポーンまで ${Math.ceil(m.respawn)}秒`
@@ -273,17 +297,17 @@ function hud(st) {
     : m.recall > 0 ? `リコール中… ${m.recall.toFixed(1)}秒（移動・攻撃・被ダメージで中断）` : '';
 }
 
-$('restart').hidden = !soloMode;
 $('restart').addEventListener('click', () => socket.emit('restart'));
+socket.on('lobby', () => { phase = 'waiting'; clearKeys(); myId = null; });
 socket.on('disconnect', reason => { phase = 'waiting'; clearKeys(); if (reason !== 'io server disconnect') $('msg').textContent = '接続が切れました。再接続中…'; });
 socket.on('connect_error', () => { $('msg').textContent = '接続できません。サーバーを確認してください'; });
 
 // ---------- エフェクト ----------
-function arc(x, z, face, r, half) {
+function arc(x, z, face, r, half, color = 0xe6c15a) {
   const g = new THREE.Group();
   g.position.set(x, 0.1, z);
   g.rotation.y = face - Math.PI / 2;
-  const mat = new THREE.MeshBasicMaterial({ color: 0xe6c15a, transparent: true, opacity: 0.7, side: THREE.DoubleSide });
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7, side: THREE.DoubleSide });
   const m = new THREE.Mesh(new THREE.CircleGeometry(r, 24, -half, half * 2), mat);
   m.rotation.x = -Math.PI / 2;
   g.add(m);
@@ -300,11 +324,12 @@ function marker(p) {
   fxs.push({ g: m, m: mat, t: 0, life: 0.4 });
 }
 
-function dmgText(e, n) {
+function dmgText(e, n, boosted = false) {
   const v = new THREE.Vector3(e.x, e.kind === 'tower' ? 4.8 : e.kind === 'robot' ? 1.9 : 2.8, e.z).project(camera);
   const d = document.createElement('div');
   d.className = 'dmg';
   d.textContent = n;
+  if (boosted) d.style.color = '#ff4545';
   d.style.left = `${(v.x * 0.5 + 0.5) * innerWidth}px`;
   d.style.top = `${(-v.y * 0.5 + 0.5) * innerHeight}px`;
   document.body.appendChild(d);
@@ -406,12 +431,12 @@ function frame() {
     e.legR.rotation.x = -w;
     e.armL.rotation.x = -w * 0.8;
     e.armR.rotation.x = e.swing > 0 ? -2.6 + 3 * (1 - e.swing / 0.25) : w * 0.8; // 振り下ろし
-    e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : s.stun > 0 ? 0x776600 : 0x000000));
+    e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : s.stun > 0 ? 0x776600 : e.swing > 0 && e.attackBoost ? 0xaa1010 : s.shield > 0 ? 0x224477 : 0x000000));
 
     if (e.bar) {
       e.bar.position.set(e.x, 1.85, e.z);
       e.bar.quaternion.copy(camera.quaternion);
-      e.bar.fill.scale.x = Math.max(0.001, s.hp / cfg.robot.hp);
+      e.bar.fill.scale.x = Math.max(0.001, s.hp / s.maxHp);
     }
   }
 

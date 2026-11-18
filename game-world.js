@@ -11,6 +11,21 @@ const CFG = {
   respawn: 5, respawnPerTower: 5,
 };
 const R = CFG.robot;
+const CHARACTERS = [
+  { id: 'alex', name: 'アレックス', role: 'タワー攻略', color: '#ee675d',
+    passive: '攻城の血脈：自身と自身の召喚ユニットが、敵タワー・召喚ユニットに与えるダメージが2倍。適用時の攻撃は赤く発光。',
+    skills: { q: { name: 'クレセント', text: '前方を28ダメージで斬り、0.3秒スタン。' }, e: { name: 'ラッシュ', text: 'カーソル方向へ素早くダッシュ。' }, c: { name: 'アサルト部隊', text: '攻撃ロボットを3体召喚。最大5体。' } }, stats: {}, robot: {} },
+  { id: 'mira', name: 'ミラ', role: '機動力・遠めの範囲攻撃', color: '#7ddbd3',
+    passive: '風の足取り：移動速度が9から11に上昇。',
+    skills: { q: { name: 'フロストファン', text: '射程7の扇形に22ダメージ、0.6秒スタン。' }, e: { name: 'ウィンドステップ', text: '短い高速ダッシュ。クールダウン2秒。' }, c: { name: 'スカウト部隊', text: 'HP30・速度9・攻撃力4の偵察ユニットを3体召喚。最大5体。' } },
+    stats: { speed: 11, qRange: 7, qArc: Math.PI / 5, qDmg: 22, qStun: 0.6, qCd: 6, dashSpeed: 48, dashTime: 0.12, eCd: 2 }, robot: { hp: 30, dmg: 4, speed: 9, atkRange: 2.6 } },
+  { id: 'bastion', name: 'バスティオン', role: '耐久・防衛', color: '#e8bc65',
+    passive: '不屈の体：最大HPが200から280に上昇。',
+    skills: { q: { name: 'グラウンドブレイク', text: '周囲3.5の敵に20ダメージ、0.5秒スタン。' }, e: { name: 'アイアンガード', text: '2秒間、受けるダメージを50%軽減。クールダウン6秒。' }, c: { name: 'ガーディアン部隊', text: 'HP70・速度5・攻撃力4の守護ユニットを3体召喚。最大5体。' } },
+    stats: { maxHp: 280, speed: 8.5, qRange: 3.5, qArc: Math.PI, qDmg: 20, qStun: 0.5, qCd: 7, eCd: 6, cCd: 10 }, robot: { hp: 70, dmg: 4, speed: 5 } },
+];
+const characterFor = id => CHARACTERS.find(c => c.id === id);
+const configFor = id => { const c = characterFor(id) || CHARACTERS[0]; return { ...CFG, ...c.stats, robot: { ...R, ...c.robot } }; };
 const SPAWNS = [{ x: -24, z: 24 }, { x: 24, z: -24 }];
 const BASE = [[-20, 0, 3], [-14, 3, 2.5], [-14, -6, 2.5], [-3, -12, 2], [-26, -4, 2], [-10, -22, 2.5], [-8, 0, 2]];
 const OBST = BASE.flatMap(([x, z, r]) => [{ x, z, r }, { x: -x, z: -z, r }]);
@@ -30,8 +45,8 @@ const protectedUnit = e => !e.tower && dist(e, SPAWNS[e.slot]) <= CFG.safeRadius
 
 function createMatch(solo = false) {
   const players = {}, robots = {}, towers = {};
-  let robotSeq = 0, winner = null;
-  const active = () => winner === null && (solo || Object.keys(players).length === 2);
+  let robotSeq = 0, winner = null, phase = 'waiting';
+  const active = () => phase === 'playing' && winner === null;
   const units = () => [...Object.values(players), ...Object.values(robots)];
   const targets = () => [...units(), ...Object.values(towers)];
   const unit = id => players[id] || robots[id] || towers[id];
@@ -44,7 +59,9 @@ function createMatch(solo = false) {
   function emitSee(src, ev, data) {
     for (const v of Object.values(players)) if (canSee(v.slot, src)) v.socket.emit(ev, data);
   }
-  const fx = (p, kind) => emitSee(p, 'fx', { id: p.id, kind, x: r2(p.x), z: r2(p.z), face: r2(p.face) });
+  const boosted = (a, b) => (isRobot(a) ? players[a.owner]?.character : a.character) === 'alex' && (b.tower || isRobot(b));
+  const fx = (p, kind, extra = {}) => emitSee(p, 'fx', { id: p.id, kind, x: r2(p.x), z: r2(p.z), face: r2(p.face), ...extra });
+  const attack = (a, b, dmg) => { fx(a, 'atk', { boosted: boosted(a, b) }); hit(a, b, dmg); };
 
   function pushOut(e) {
     // 障害物と生存タワーは通り抜けられない。
@@ -65,7 +82,7 @@ function createMatch(solo = false) {
     e.x = clamp(e.x); e.z = clamp(e.z);
   }
   function spawn(p) {
-    Object.assign(p, SPAWNS[p.slot], { hp: CFG.maxHp, dest: null, target: null, dead: false, dashT: 0, moving: false, respawn: 0, stun: 0, recall: 0, keys: null, inputT: 0 });
+    Object.assign(p, SPAWNS[p.slot], { hp: p.cfg.maxHp, dest: null, target: null, dead: false, dashT: 0, moving: false, respawn: 0, stun: 0, recall: 0, keys: null, inputT: 0, shield: 0 });
     p.face = ang(p, { x: 0, z: 0 });
     updateBush(p);
   }
@@ -89,15 +106,17 @@ function createMatch(solo = false) {
 
   function hit(a, b, dmg) {
     if (!active() || !attackable(a, b)) return;
+    const enhanced = boosted(a, b);
+    dmg = r2(dmg * (enhanced ? 2 : 1) * (b.shield > 0 ? 0.5 : 1));
     b.hp = Math.max(0, b.hp - dmg);
     b.recall = 0;
-    emitSee(b, 'hit', { id: b.id, dmg });
+    emitSee(b, 'hit', { id: b.id, source: a.id, dmg, boosted: enhanced });
     if (b.hp > 0) return;
     b.dead = true;
     if (b.tower) {
       // 復活待ちの間にタワーが壊れた場合も、その分だけ延長する。
       for (const p of Object.values(players)) if (p.slot === b.slot && p.dead) p.respawn += CFG.respawnPerTower;
-      if (destroyed(b.slot) === CFG.tower.count) winner = a.slot;
+      if (destroyed(b.slot) === CFG.tower.count) { winner = a.slot; phase = 'finished'; }
       return;
     }
     if (isRobot(b)) { delete robots[b.id]; return; }
@@ -107,26 +126,35 @@ function createMatch(solo = false) {
     if (credit) credit.kills++;
   }
   function melee(p, range, halfArc, dmg, kind) {
-    fx(p, kind);
-    for (const o of targets()) {
-      if (!attackable(p, o) || dist(p, o) > range + o.radius) continue;
-      if (Math.abs(wrap(ang(p, o) - p.face)) <= halfArc) {
-        const before = o.hp;
-        hit(p, o, dmg);
-        if (o.hp < before && kind === 'q' && !o.tower && !o.dead) {
-          o.stun = CFG.qStun;
-          o.dest = null; o.target = null; o.dashT = 0; o.keys = null; o.recall = 0; o.moving = false;
-        }
+    const victims = targets().filter(o => attackable(p, o) && dist(p, o) <= range + o.radius && Math.abs(wrap(ang(p, o) - p.face)) <= halfArc);
+    fx(p, kind, { range, halfArc, boosted: victims.some(o => boosted(p, o)) });
+    for (const o of victims) {
+      const before = o.hp;
+      hit(p, o, dmg);
+      if (o.hp < before && kind === 'q' && !o.tower && !o.dead) {
+        o.stun = p.cfg.qStun;
+        o.dest = null; o.target = null; o.dashT = 0; o.keys = null; o.recall = 0; o.moving = false;
       }
     }
   }
   function connect(socket) {
     const slot = [0, 1].find(s => !Object.values(players).some(p => p.slot === s));
     if (slot === undefined) { socket.emit('full'); socket.disconnect(); return false; }
-    const p = players[socket.id] = { id: socket.id, socket, slot, radius: CFG.radius, kills: 0, atkCd: 0, qCd: 0, eCd: 0, cCd: 0 };
+    const p = players[socket.id] = { id: socket.id, socket, slot, radius: CFG.radius, kills: 0, atkCd: 0, qCd: 0, eCd: 0, cCd: 0, character: null, confirmed: false, cfg: configFor('alex') };
     spawn(p);
-    if (active()) reset();
-    socket.emit('init', { id: p.id, slot, cfg: CFG, map: MAP, solo });
+    if (solo || Object.keys(players).length === 2) phase = 'selecting';
+    socket.emit('init', { id: p.id, slot, cfg: CFG, map: MAP, solo, characters: CHARACTERS });
+    socket.on('selectCharacter', d => {
+      if (phase !== 'selecting' || p.confirmed || !characterFor(d?.id)) return;
+      p.character = d.id; p.cfg = configFor(d.id); spawn(p);
+    });
+    socket.on('confirmCharacter', () => {
+      if (phase !== 'selecting' || !p.character) return;
+      p.confirmed = true;
+      if ((solo || Object.keys(players).length === 2) && Object.values(players).every(p => p.confirmed)) {
+        reset(); phase = 'playing';
+      }
+    });
     const ready = () => active() && !p.dead && p.stun <= 0;
     socket.on('steer', d => {
       if (!isNum(d?.x, d?.z) || Math.abs(d.x) > 1 || Math.abs(d.z) > 1) return;
@@ -156,32 +184,40 @@ function createMatch(solo = false) {
     socket.on('q', d => {
       if (!ready() || p.qCd > 0 || p.dashT > 0 || !isNum(d?.x, d?.z)) return;
       p.recall = 0;
-      p.qCd = CFG.qCd; p.face = ang(p, d); p.dest = null;
-      melee(p, CFG.qRange, CFG.qArc, CFG.qDmg, 'q');
+      p.qCd = p.cfg.qCd; p.face = ang(p, d); p.dest = null;
+      melee(p, p.cfg.qRange, p.cfg.qArc, p.cfg.qDmg, 'q');
     });
     socket.on('dash', d => {
       if (!ready() || p.eCd > 0 || !isNum(d?.x, d?.z)) return;
       p.recall = 0;
-      p.eCd = CFG.eCd; p.face = ang(p, d); p.dashT = CFG.dashTime; p.dest = null;
+      p.eCd = p.cfg.eCd;
+      if (p.character === 'bastion') { p.shield = 2; fx(p, 'shield'); return; }
+      p.face = ang(p, d); p.dashT = p.cfg.dashTime; p.dest = null;
     });
     socket.on('c', () => {
+      const R = p.cfg.robot;
       const count = Object.values(robots).filter(r => r.owner === p.id).length;
       if (!ready() || p.cCd > 0 || count >= R.max) return;
       p.recall = 0;
-      p.cCd = CFG.cCd;
+      p.cCd = p.cfg.cCd;
       for (let i = 0; i < Math.min(R.batch, R.max - count); i++) {
         const a = p.face + (i - 1) * 0.6, id = 'r' + (++robotSeq);
-        const r = robots[id] = { id, owner: p.id, slot, radius: R.radius, hp: R.hp, life: R.life, dead: false, stun: 0,
+        const r = robots[id] = { id, owner: p.id, slot, character: p.character, cfg: R, radius: R.radius, hp: R.hp, maxHp: R.hp, life: R.life, dead: false, stun: 0,
           x: clamp(p.x + Math.sin(a) * 1.6), z: clamp(p.z + Math.cos(a) * 1.6), face: p.face, atkCd: 0, target: null, moving: false };
         pushOut(r); updateBush(r);
       }
     });
-    socket.on('restart', () => { if (solo) reset(); });
-    socket.on('disconnect', () => { delete players[p.id]; reset(); });
+    socket.on('restart', () => { if (solo && (active() || phase === 'finished')) { reset(); phase = 'playing'; } });
+    socket.on('disconnect', () => {
+      delete players[p.id];
+      phase = 'abandoned';
+      for (const v of Object.values(players)) v.socket.emit('matchEnded', { reason: '対戦相手が退出しました。ロビーからもう一度参加してください。' });
+    });
     return true;
   }
   const reach = (range, e) => range + (e.tower ? e.radius : 0);
   function tickRobot(r) {
+    const R = r.cfg || CFG.robot;
     r.life -= DT; r.atkCd = Math.max(0, r.atkCd - DT);
     const owner = players[r.owner];
     if (r.life <= 0 || !owner) { delete robots[r.id]; return; }
@@ -201,7 +237,7 @@ function createMatch(solo = false) {
     if (foe) {
       if (dist(r, foe) <= reach(R.atkRange, foe)) {
         r.face = ang(r, foe);
-        if (r.atkCd <= 0) { r.atkCd = R.atkCd; fx(r, 'atk'); hit(r, foe, R.dmg); }
+        if (r.atkCd <= 0) { r.atkCd = R.atkCd; attack(r, foe, R.dmg); }
       } else goal = foe;
     } else if (!owner.dead && dist(r, owner) > 4) goal = owner;
     r.moving = false;
@@ -219,6 +255,7 @@ function createMatch(solo = false) {
     for (const cd of ['atkCd', 'qCd', 'eCd', 'cCd']) p[cd] = Math.max(0, p[cd] - DT);
     if (p.dead) { p.respawn -= DT; if (p.respawn <= 0) spawn(p); return; }
     p.moving = false;
+    p.shield = Math.max(0, p.shield - DT);
     p.inputT = Math.max(0, p.inputT - DT);
     if (p.inputT <= 0) p.keys = null;
     if (p.stun > 0) { p.stun = decay(p.stun); return; }
@@ -228,31 +265,31 @@ function createMatch(solo = false) {
         const hp = p.hp;
         spawn(p); p.hp = hp;
       }
-      if (protectedUnit(p)) p.hp = Math.min(CFG.maxHp, p.hp + CFG.safeHeal * DT);
+      if (protectedUnit(p)) p.hp = Math.min(p.cfg.maxHp, p.hp + CFG.safeHeal * DT);
       return;
     }
     let dir = null, step = 0, foe = p.target && unit(p.target);
     if (!attackable(p, foe)) { foe = null; p.target = null; }
     if (p.dashT > 0) {
-      p.dashT -= DT; step = CFG.dashSpeed * DT; p.moving = true;
+      p.dashT -= DT; step = p.cfg.dashSpeed * DT; p.moving = true;
       dir = { x: Math.sin(p.face), z: Math.cos(p.face) };
     } else {
       let goal = p.dest;
       if (foe) {
-        if (dist(p, foe) <= reach(CFG.atkRange, foe)) {
+        if (dist(p, foe) <= reach(p.cfg.atkRange, foe)) {
           goal = null; p.face = ang(p, foe);
-          if (p.atkCd <= 0) { p.atkCd = CFG.atkCd; fx(p, 'atk'); hit(p, foe, CFG.atkDmg); }
+          if (p.atkCd <= 0) { p.atkCd = p.cfg.atkCd; attack(p, foe, p.cfg.atkDmg); }
         } else if (!p.keys) goal = foe;
       }
       if (p.keys) {
-        dir = p.keys; step = CFG.speed * DT; p.moving = true;
-        if (!foe || dist(p, foe) > reach(CFG.atkRange, foe)) p.face = Math.atan2(dir.x, dir.z);
+        dir = p.keys; step = p.cfg.speed * DT; p.moving = true;
+        if (!foe || dist(p, foe) > reach(p.cfg.atkRange, foe)) p.face = Math.atan2(dir.x, dir.z);
       }
       if (goal) {
         const d = dist(p, goal);
         if (d < 0.1) p.dest = null;
         else {
-          step = Math.min(CFG.speed * DT, d); p.moving = true;
+          step = Math.min(p.cfg.speed * DT, d); p.moving = true;
           dir = { x: (goal.x - p.x) / d, z: (goal.z - p.z) / d };
           p.face = Math.atan2(dir.x, dir.z);
         }
@@ -260,7 +297,7 @@ function createMatch(solo = false) {
     }
     if (dir) { p.x += dir.x * step; p.z += dir.z * step; }
     pushOut(p); updateBush(p);
-    if (protectedUnit(p)) p.hp = Math.min(CFG.maxHp, p.hp + CFG.safeHeal * DT);
+    if (protectedUnit(p)) p.hp = Math.min(p.cfg.maxHp, p.hp + CFG.safeHeal * DT);
   }
   function tickTower(t) {
     if (t.dead) return;
@@ -281,21 +318,23 @@ function createMatch(solo = false) {
     const list = Object.values(players);
     for (const v of list) {
       v.socket.emit('state', {
-        solo, winner, phase: winner !== null ? 'finished' : active() ? 'playing' : 'waiting',
+        solo, winner, phase,
         towers: Object.values(towers).map(t => ({ id: t.id, slot: t.slot, x: r2(t.x), z: r2(t.z), hp: t.hp, dead: t.dead, face: t.face })),
         players: list.map(p => {
           const vis = canSee(v.slot, p);
-          const s = { id: p.id, slot: p.slot, hp: r2(p.hp), dead: p.dead, kills: p.kills, vis, stun: r2(p.stun), recall: r2(p.recall) };
+          const s = { id: p.id, slot: p.slot, character: p.character, confirmed: p.confirmed, maxHp: p.cfg.maxHp, hp: r2(p.hp), dead: p.dead, kills: p.kills, vis, stun: r2(p.stun), recall: r2(p.recall), shield: r2(p.shield) };
           if (vis) Object.assign(s, { x: r2(p.x), z: r2(p.z), face: r2(p.face), moving: active() && p.moving });
           if (p === v) Object.assign(s, { qCd: r2(p.qCd), eCd: r2(p.eCd), cCd: r2(p.cCd), respawn: r2(Math.max(0, p.respawn)), safe: !p.dead && protectedUnit(p), respawnTime: CFG.respawn + destroyed(p.slot) * CFG.respawnPerTower });
           return s;
         }),
-        robots: Object.values(robots).filter(r => canSee(v.slot, r)).map(r => ({ id: r.id, slot: r.slot, x: r2(r.x), z: r2(r.z), face: r2(r.face), hp: r.hp, stun: r2(r.stun || 0), moving: active() && r.moving })),
+        robots: Object.values(robots).filter(r => canSee(v.slot, r)).map(r => ({ id: r.id, slot: r.slot, character: r.character, maxHp: r.maxHp || R.hp, x: r2(r.x), z: r2(r.z), face: r2(r.face), hp: r.hp, stun: r2(r.stun || 0), moving: active() && r.moving })),
       });
     }
   }
   // サーバー内部の状態。Socket.IOのイベントからは直接変更できない。
-  return { connect, tick, state: { players, robots, towers } };
+  return { connect, tick, empty: () => Object.keys(players).length === 0, state: { players, robots, towers } };
 }
 
-module.exports = { createMatch, CFG, MAP, TICK };
+const ArenaWorld = { createMatch, CFG, MAP, TICK, CHARACTERS, characterFor, configFor };
+if (typeof module !== 'undefined' && module.exports) module.exports = ArenaWorld;
+else globalThis.ArenaWorld = ArenaWorld;

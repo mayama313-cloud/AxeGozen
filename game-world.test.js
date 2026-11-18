@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { createMatch, CFG, MAP, TICK } = require('./game-world');
+const { createMatch, CFG, MAP, TICK, CHARACTERS, configFor } = require('./game-world');
 
 function socket(id) {
   return {
@@ -15,6 +15,8 @@ function setup(solo = false) {
   const match = createMatch(solo), a = socket('a'), b = socket('b');
   match.connect(a);
   if (!solo) match.connect(b);
+  a.send('selectCharacter', { id: 'alex' }); a.send('confirmCharacter');
+  if (!solo) { b.send('selectCharacter', { id: 'alex' }); b.send('confirmCharacter'); }
   const { players, towers, robots } = match.state;
   // 各テストで必要なタワーだけ反撃させる。
   for (const t of Object.values(towers)) t.atkCd = 10000;
@@ -86,7 +88,7 @@ test('player right-click and Q damage towers; last destroyed tower ends match an
   const t = towers['t1-2'];
   place(p, t.x - 2.5, t.z);
   a.send('chase', { id: t.id }); match.tick();
-  assert.equal(t.hp, CFG.tower.hp - CFG.atkDmg);
+  assert.equal(t.hp, CFG.tower.hp - CFG.atkDmg * 2);
   for (const tower of Object.values(towers).filter(t => t.slot === 1 && t.id !== 't1-2')) {
     place(p, tower.x, tower.z + 3); p.qCd = 0; tower.hp = CFG.qDmg;
     a.send('q', aim(tower));
@@ -148,7 +150,7 @@ test('each side uses its own tower losses for every playable respawn penalty', (
   }
 });
 
-test('online waits for two players; solo is isolated, starts immediately and restarts', () => {
+test('online waits for two players and character confirmation; solo is isolated and restarts', () => {
   const online = createMatch(), a = socket('a'); online.connect(a);
   a.send('move', { x: 0, z: 0 }); online.tick();
   assert.equal(a.events.state.phase, 'waiting');
@@ -161,9 +163,12 @@ test('online waits for two players; solo is isolated, starts immediately and res
   soloSocket.send('restart'); match.tick();
   assert.equal(towers['t1-0'].hp, CFG.tower.hp); assert.deepEqual(aim(p), MAP.spawns[0]);
   const b = socket('b'); online.connect(b); online.tick();
+  assert.equal(a.events.state.phase, 'selecting');
+  a.send('selectCharacter', { id: 'alex' }); a.send('confirmCharacter');
+  b.send('selectCharacter', { id: 'alex' }); b.send('confirmCharacter'); online.tick();
   assert.equal(a.events.state.phase, 'playing');
   const c = socket('c'); assert.equal(online.connect(c), false); assert.equal(c.closed, true);
-  b.send('disconnect'); online.tick(); assert.equal(a.events.state.phase, 'waiting');
+  b.send('disconnect'); online.tick(); assert.equal(a.events.state.phase, 'abandoned');
 });
 
 test('central crossroads are free of bushes, and invalid input is ignored', () => {
@@ -257,6 +262,7 @@ test('Q stuns robots but not towers, missed enemies or enemies inside their safe
   const { match, a, b, p, q, robots, towers } = setup();
   place(p, 0, 0); place(q, 1, 0); b.send('c');
   const r = Object.values(robots)[0]; place(r, 1, 0); r.target = p.id;
+  r.hp = 80;
   place(q, -6, 0);
   a.send('q', aim(r));
   assert.equal(r.stun, 0.3); assert.equal(q.stun, 0);
@@ -266,4 +272,79 @@ test('Q stuns robots but not towers, missed enemies or enemies inside their safe
   place(q, MAP.spawns[1].x, MAP.spawns[1].z);
   place(p, q.x - 4.8, q.z); p.qCd = 0; a.send('q', aim(q));
   assert.equal(q.stun, 0); assert.equal(q.hp, CFG.maxHp);
+});
+
+test('character selection freezes gameplay and requires both valid selections to be confirmed', () => {
+  const match = createMatch(), a = socket('a'), b = socket('b');
+  match.connect(a); match.connect(b);
+  a.send('selectCharacter', { id: 'unknown' }); a.send('confirmCharacter');
+  a.send('move', { x: 0, z: 0 }); a.send('c'); match.tick();
+  assert.equal(a.events.state.phase, 'selecting');
+  assert.equal(match.state.players.a.character, null); assert.equal(Object.keys(match.state.robots).length, 0);
+  a.send('selectCharacter', { id: 'mira' }); a.send('confirmCharacter');
+  a.send('selectCharacter', { id: 'alex' });
+  ticks(match, 10); assert.equal(a.events.state.phase, 'selecting');
+  assert.equal(match.state.players.a.character, 'mira');
+  b.send('selectCharacter', { id: 'bastion' }); b.send('confirmCharacter'); match.tick();
+  assert.equal(a.events.state.phase, 'playing'); assert.equal(match.state.players.b.hp, 280);
+  a.send('selectCharacter', { id: 'alex' }); assert.equal(match.state.players.a.character, 'mira');
+});
+
+test('Alex doubles Q and normal damage against towers and summoned units, never against players', () => {
+  const { match, a, p, q, towers, robots } = setup();
+  const tower = towers['t1-2'];
+  place(p, tower.x - 3, tower.z); a.send('q', aim(tower));
+  assert.equal(tower.hp, CFG.tower.hp - 56);
+  assert.equal(a.events.fx.boosted, true); assert.equal(a.events.hit.dmg, 56); assert.equal(a.events.hit.boosted, true);
+  robots.target = { id: 'target', slot: 1, owner: q.id, x: 1, z: 0, radius: 0.4, hp: 100, maxHp: 100, life: 20, face: 0, atkCd: 100, bush: -1, stun: 0 };
+  place(p, 0, 0); p.qCd = 0; place(q, -6, 0);
+  a.send('q', { x: 1, z: 0 }); assert.equal(robots.target.hp, 44);
+  p.atkCd = 0; a.send('chase', { id: 'target' }); match.tick(); assert.equal(robots.target.hp, 24);
+  delete robots.target;
+  place(q, 1, 0); p.qCd = 0; a.send('q', aim(q));
+  assert.equal(q.hp, CFG.maxHp - 28);
+  assert.equal(a.events.hit.boosted, false);
+});
+
+test('Alex summoned units inherit the passive exactly once, with red effect metadata only for affected targets', () => {
+  const { match, a, p, q, robots, towers } = setup();
+  a.send('c');
+  const r = Object.values(robots)[0];
+  for (const other of Object.values(robots).slice(1)) delete robots[other.id];
+  const tower = towers['t1-2']; place(r, tower.x - 2, tower.z); place(p, tower.x - 5, tower.z);
+  match.tick();
+  assert.equal(tower.hp, CFG.tower.hp - 10);
+  assert.equal(a.events.fx.id, r.id); assert.equal(a.events.fx.boosted, true);
+  assert.equal(a.events.hit.dmg, 10);
+  place(r, 0, 0); place(q, 1, 0); r.atkCd = 0; r.target = q.id; match.tick();
+  assert.equal(q.hp, CFG.maxHp - 5); assert.equal(a.events.fx.boosted, false);
+});
+
+test('each additional character has active skills and a working passive', () => {
+  for (const c of CHARACTERS) for (const key of ['q', 'e', 'c']) assert.ok(c.skills[key].name && c.skills[key].text);
+  for (const id of ['mira', 'bastion']) {
+    const match = createMatch(true), a = socket('a'); match.connect(a);
+    a.send('selectCharacter', { id }); a.send('confirmCharacter');
+    const p = match.state.players.a, cfg = configFor(id);
+    assert.equal(p.hp, cfg.maxHp);
+    place(p, 0, 0); a.send('steer', { x: 1, z: 0 }); match.tick();
+    assert.ok(Math.abs(p.x - cfg.speed / TICK) < 1e-9);
+    a.send('c'); assert.equal(Object.keys(match.state.robots).length, 3);
+    for (const r of Object.values(match.state.robots)) { assert.equal(r.hp, cfg.robot.hp); assert.equal(r.cfg.dmg, cfg.robot.dmg); }
+    a.send('q', { x: 5, z: 0 }); assert.equal(p.qCd, cfg.qCd);
+    a.send('dash', { x: 5, z: 0 }); assert.equal(p.eCd, cfg.eCd);
+    if (id === 'bastion') { assert.equal(p.shield, 2); assert.equal(p.dashT, 0); }
+    else assert.equal(p.dashT, cfg.dashTime);
+  }
+});
+
+test('Bastion guard halves incoming damage for two seconds and expires', () => {
+  const match = createMatch(), a = socket('a'), b = socket('b'); match.connect(a); match.connect(b);
+  a.send('selectCharacter', { id: 'alex' }); a.send('confirmCharacter');
+  b.send('selectCharacter', { id: 'bastion' }); b.send('confirmCharacter');
+  const p = match.state.players.a, q = match.state.players.b;
+  place(p, 0, 0); place(q, 1, 0);
+  b.send('dash', aim(p)); a.send('q', aim(q)); assert.equal(q.hp, 280 - 14);
+  ticks(match, TICK * 2 + 1); assert.equal(q.shield, 0);
+  p.qCd = 0; a.send('q', aim(q)); assert.equal(q.hp, 280 - 14 - 28);
 });

@@ -7,6 +7,8 @@
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #10161a; color: #eef3f6; font-family: system-ui, "Hiragino Sans", "Yu Gothic", sans-serif; }
   #gameCanvas { display: block; width: 100%; height: 100%; }
+  #hud { position: fixed; inset: 0; pointer-events: none; }
+  #modes, #skills { pointer-events: auto; }
   .bar { position: fixed; top: 14px; width: 34%; height: 16px; background: #0009; border: 1px solid #fff4; }
   .bar i { display: block; height: 100%; width: 100%; transition: width .12s; }
   #meBar { left: 14px; } #meBar i { background: #4fb3d9; }
@@ -20,35 +22,87 @@
   #msg { position: fixed; top: 22%; width: 100%; text-align: center; font-size: 22px; text-shadow: 0 2px 6px #000; pointer-events: none; }
   #skills { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; }
   .sk { position: relative; width: 58px; height: 58px; border: 2px solid #e6c15a; background: #0b1013cc; display: grid; place-items: center; font-weight: 700; font-size: 20px; overflow: hidden; }
-  .sk small { position: absolute; bottom: 2px; right: 4px; font-size: 10px; font-weight: 400; opacity: .8; }
+  .sk small { position: absolute; bottom: 2px; left: 2px; right: 2px; text-align: center; font-size: 9px; line-height: 1.1; font-weight: 400; opacity: .8; }
   .sk b { position: absolute; left: 0; bottom: 0; width: 100%; height: 0; background: #000b; }
   #help { position: fixed; bottom: 6px; left: 12px; font-size: 12px; opacity: .8; max-width: 30%; background: #10161aaa; pointer-events: none; }
   .dmg { position: fixed; transform: translate(-50%, -50%); color: #ffd36a; font-weight: 700; font-size: 20px; text-shadow: 0 1px 3px #000; pointer-events: none; animation: rise .7s forwards; }
   @keyframes rise { to { transform: translate(-50%, -170%); opacity: 0; } }
+  [hidden] { display: none !important; }
+  #lobby { position: fixed; inset: 0; z-index: 30; overflow: auto; background: radial-gradient(ellipse at top, #24444c, #10161af7 65%); display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
+  .lobby-panel { width: min(1120px, 100%); margin: auto; }
+  .eyebrow { color: #e6c15a; letter-spacing: .2em; font-size: 12px; }
+  #lobby h1 { font-size: clamp(32px, 5vw, 58px); margin: 12px 0; }
+  #lobby h2 { font-size: 30px; margin: 12px 0; }
+  #lobby p { color: #c7d5dd; line-height: 1.7; }
+  .mode-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 30px 0; }
+  .mode-option { padding: 24px; border: 1px solid #63808b; border-radius: 12px; background: #152832; cursor: pointer; }
+  .mode-option:has(input:checked) { border-color: #e6c15a; background: #293b37; }
+  .mode-option strong { font-size: 21px; margin-left: 8px; }
+  #lobby button { font: inherit; border: 1px solid #8eafbd; border-radius: 6px; padding: 12px 24px; color: #eef3f6; background: #203d4c; cursor: pointer; }
+  #lobby button.primary { color: #172126; background: #e6c15a; border-color: #e6c15a; font-weight: 700; }
+  #lobby button:disabled { opacity: .45; cursor: default; }
+  #characterCards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
+  .character-card { background: #14252e; border: 2px solid #425c68; padding: 22px; border-radius: 12px; }
+  .character-card.selected { border-color: var(--accent); background: #233843; }
+  .character-card h3 { font-size: 25px; margin: 0 0 6px; color: var(--accent); }
+  .character-card .role { color: #b1c4ce; font-size: 12px; }
+  .character-card dl { font-size: 13px; line-height: 1.6; }
+  .character-card dt { font-weight: 700; margin-top: 12px; }
+  .character-card dd { margin: 4px 0 0; color: #c7d5dd; }
+  .character-card p { font-size: 13px; }
+  .lobby-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+  @media (max-width: 760px) { #characterCards, .mode-list { grid-template-columns: 1fr; } #lobby { padding: 20px; } #status { max-width: 65%; } }
 </style>
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
+<main id="lobby">
+  <section id="lobbyHome" class="lobby-panel">
+    <div class="eyebrow">AXE GOZEN / 1 vs 1</div>
+    <h1>戦場へ、準備を。</h1>
+    <p>モードを選んで試合開始。キャラクターを決めたら、敵陣のタワー5本を攻略しよう。</p>
+    <div class="mode-list">
+      <label class="mode-option"><input type="radio" name="mode" value="offline" checked><strong>オフライン</strong><p>1人用のタワー攻略練習。対戦通信なしで操作やスキルを試せます。</p></label>
+      <label class="mode-option"><input type="radio" name="mode" value="online"><strong>オンライン</strong><p>参加中のプレイヤーと1対1でマッチング。2人が準備できたら開戦します。</p></label>
+    </div>
+    <button id="startMatch" type="button" class="primary">試合開始</button>
+  </section>
+  <section id="matchmaking" class="lobby-panel" hidden>
+    <div class="eyebrow">MATCHMAKING</div><h2 id="matchingTitle">対戦相手を探しています…</h2>
+    <p id="matchingMessage" role="status">マッチ成立後にキャラクターを選択します。</p>
+    <button id="cancelMatch" type="button">ロビーに戻る</button>
+  </section>
+  <section id="characterSelect" class="lobby-panel" hidden>
+    <div class="eyebrow">CHARACTER SELECT</div><h2>キャラクターを選択</h2>
+    <p id="selectionStatus" role="status">Q・E・Cとパッシブを確認して、出撃するキャラを選んでください。</p>
+    <div id="characterCards"></div>
+    <div class="lobby-actions"><button id="confirmCharacter" type="button" class="primary" disabled>選択を確定・準備完了</button><button id="leaveSelection" type="button">ロビーに戻る</button><span id="opponentSelection"></span></div>
+  </section>
+</main>
+<div id="hud" hidden>
 <div class="bar" id="meBar"><i id="playerHpFill"></i></div>
 <div class="bar" id="foeBar"><i id="enemyHpFill"></i></div>
 <div id="score">0 - 0</div>
 <div id="objective">タワー残り　自陣 5/5　敵陣 5/5</div>
 <div id="status"></div>
 <nav id="modes" aria-label="ゲームモード">
-  <a href="/">オンライン対戦</a>
-  <a href="/?mode=solo">1人用テスト</a>
+  <button id="returnLobby" type="button">ロビーに戻る</button>
   <button id="restart" type="button" hidden>最初からテスト</button>
 </nav>
 <div id="msg">接続中…</div>
 <div id="skills">
-  <div class="sk" title="範囲斬り・命中で0.3秒スタン">Q<small>斬り・スタン</small><b id="qCooldown"></b></div>
-  <div class="sk">E<small>ダッシュ</small><b id="eCooldown"></b></div>
-  <div class="sk" title="3体召喚・最大5体">C<small>3体召喚</small><b id="cCooldown"></b></div>
+  <div class="sk" id="qSkill">Q<small id="qLabel">Qスキル</small><b id="qCooldown"></b></div>
+  <div class="sk" id="eSkill">E<small id="eLabel">Eスキル</small><b id="eCooldown"></b></div>
+  <div class="sk" id="cSkill">C<small id="cLabel">Cスキル</small><b id="cCooldown"></b></div>
   <div class="sk" title="5秒間で自陣に帰還。移動・攻撃・被ダメージで中断">B<small>リコール</small><b id="recallProgress"></b></div>
 </div>
-<div id="help">WASD: 移動 / 右クリック: 移動・敵やタワーを攻撃 / Q: 範囲斬り＋0.3秒スタン / E: ダッシュ / C: 3体召喚（最大5体） / B: 5秒リコール（移動・攻撃・被ダメージで中断、Bでキャンセル）<br>敵タワー5本を全て破壊すると勝利。安全地帯では無敵・毎秒80HP回復。復活は5秒＋自陣の破壊済みタワー数×5秒。</div>
+<div id="help">WASD: 移動 / 右クリック: 移動・敵やタワーを攻撃 / Q・E・C: キャラクタースキル / B: 5秒リコール（移動・攻撃・被ダメージで中断、Bでキャンセル）<br>敵タワー5本を全て破壊すると勝利。復活は5秒＋自陣の破壊済みタワー数×5秒。</div>
+</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="/socket.io/socket.io.js"></script>
+<script src="/game-world.js"></script>
+<script src="session.js"></script>
 <script src="game.js"></script>
+<script src="lobby.js"></script>
 </body>
 </html>

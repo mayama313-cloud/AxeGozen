@@ -12,12 +12,17 @@
   #meBar { left: 14px; } #meBar i { background: #4fb3d9; }
   #foeBar { right: 14px; } #foeBar i { background: #d9574f; margin-left: auto; }
   #score { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); font-size: 24px; font-weight: 700; letter-spacing: .08em; }
+  #objective, #status { position: fixed; left: 14px; padding: 5px 9px; background: #10161ac9; border-radius: 4px; pointer-events: none; }
+  #objective { top: 40px; font-weight: 700; } #status { top: 76px; font-size: 12px; }
+  #modes { position: fixed; right: 14px; top: 44px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 45%; }
+  #modes a, #modes button { font: inherit; font-size: 12px; color: #eef3f6; background: #162a36ed; border: 1px solid #9ac5de; border-radius: 4px; padding: 7px 10px; text-decoration: none; cursor: pointer; }
+  #modes button[hidden] { display: none; }
   #msg { position: fixed; top: 22%; width: 100%; text-align: center; font-size: 22px; text-shadow: 0 2px 6px #000; pointer-events: none; }
   #skills { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; }
   .sk { position: relative; width: 58px; height: 58px; border: 2px solid #e6c15a; background: #0b1013cc; display: grid; place-items: center; font-weight: 700; font-size: 20px; overflow: hidden; }
   .sk small { position: absolute; bottom: 2px; right: 4px; font-size: 10px; font-weight: 400; opacity: .8; }
   .sk b { position: absolute; left: 0; bottom: 0; width: 100%; height: 0; background: #000b; }
-  #help { position: fixed; bottom: 6px; left: 12px; font-size: 12px; opacity: .65; }
+  #help { position: fixed; bottom: 6px; left: 12px; font-size: 12px; opacity: .8; max-width: 30%; background: #10161aaa; pointer-events: none; }
   .dmg { position: fixed; transform: translate(-50%, -50%); color: #ffd36a; font-weight: 700; font-size: 20px; text-shadow: 0 1px 3px #000; pointer-events: none; animation: rise .7s forwards; }
   @keyframes rise { to { transform: translate(-50%, -170%); opacity: 0; } }
 </style>
@@ -27,13 +32,20 @@
 <div class="bar" id="meBar"><i id="playerHpFill"></i></div>
 <div class="bar" id="foeBar"><i id="enemyHpFill"></i></div>
 <div id="score">0 - 0</div>
+<div id="objective">タワー残り　自陣 5/5　敵陣 5/5</div>
+<div id="status"></div>
+<nav id="modes" aria-label="ゲームモード">
+  <a href="/">オンライン対戦</a>
+  <a href="/?mode=solo">1人用テスト</a>
+  <button id="restart" type="button" hidden>最初からテスト</button>
+</nav>
 <div id="msg">接続中…</div>
 <div id="skills">
   <div class="sk">Q<small>範囲斬り</small><b id="qCooldown"></b></div>
   <div class="sk">E<small>ダッシュ</small><b id="eCooldown"></b></div>
   <div class="sk">C<small>ロボ</small><b id="cCooldown"></b></div>
 </div>
-<div id="help">右クリック: 移動 / 敵を右クリック: 追跡して攻撃 / Q: 範囲斬り / E: ダッシュ / C: ロボット召喚 / ブッシュ内は外から見えない</div>
+<div id="help">右クリック: 移動・敵やタワーを攻撃 / Q: 範囲斬り / E: ダッシュ / C: ロボット召喚（タワーも攻撃）<br>敵タワー5本を全て破壊すると勝利。安全地帯では無敵・毎秒80HP回復。復活は5秒＋自陣の破壊済みタワー数×5秒。</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 <script src="game.js"></script>

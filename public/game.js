@@ -1,4 +1,5 @@
-const socket = io();
+const soloMode = new URLSearchParams(location.search).get('mode') === 'solo';
+const socket = io({ query: { mode: soloMode ? 'solo' : 'online' } });
 const $ = id => document.getElementById(id);
 const canvas = $('gameCanvas');
 const ALLY = 0x2f7fb0, ENEMY = 0xb0413a;   // 自分=青 / 相手=赤（どちらのプレイヤーから見ても同じ）
@@ -42,8 +43,17 @@ function add(geo, color, x, y, z, parent = scene, shadow = true) {
 
 // ---------- マップ（サーバーの設定から生成） ----------
 const crystals = [], bushes = [];
+const mapRoot = new THREE.Group();
+scene.add(mapRoot);
+function disposeObject(object) {
+  if (object.parent) object.parent.remove(object);
+  object.traverse(child => {
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) child.material.dispose();
+  });
+}
 function buildMap({ half, obst, spawns, bushes: bushList }, mySlot) {
-  const ground = add(new THREE.PlaneGeometry(half * 2, half * 2), 0x2f3b3a, 0, 0, 0, scene, false);
+  const ground = add(new THREE.PlaneGeometry(half * 2, half * 2), 0x2f3b3a, 0, 0, 0, mapRoot, false);
   ground.rotation.x = -Math.PI / 2;
 
   const strip = (w, color, y, rotY) => {
@@ -52,17 +62,23 @@ function buildMap({ half, obst, spawns, bushes: bushList }, mySlot) {
     g.position.y = y;
     const m = add(new THREE.PlaneGeometry(w, half * 2 * Math.SQRT2 - 4), color, 0, 0, 0, g, false);
     m.rotation.x = -Math.PI / 2;
-    scene.add(g);
+    mapRoot.add(g);
   };
   strip(6, 0x2d5f7a, 0.02, Math.PI / 4);       // 川
   strip(10, 0x7a7766, 0.04, 3 * Math.PI / 4);  // レーン（川の上は橋になる）
 
   spawns.forEach((s, i) => {
     const col = i === mySlot ? ALLY : ENEMY;
-    const pad = add(new THREE.CylinderGeometry(4, 4, 0.1, 32), col, s.x, 0.05, s.z, scene, false);
+    const pad = add(new THREE.CylinderGeometry(cfg.safeRadius, cfg.safeRadius, 0.1, 48), col, s.x, 0.05, s.z, mapRoot, false);
     pad.material.transparent = true;
     pad.material.opacity = 0.55;
-    const c = add(new THREE.OctahedronGeometry(1.6), col, s.x * 1.125, 2.2, s.z * 1.125);
+    const shield = add(new THREE.SphereGeometry(cfg.safeRadius, 40, 20, 0, Math.PI * 2, 0, Math.PI / 2), col, s.x, 0, s.z, mapRoot, false);
+    shield.material.transparent = true;
+    shield.material.opacity = 0.12;
+    shield.material.depthWrite = false;
+    const ring = add(new THREE.RingGeometry(cfg.safeRadius - 0.08, cfg.safeRadius + 0.08, 48), col, s.x, 0.13, s.z, mapRoot, false);
+    ring.rotation.x = -Math.PI / 2;
+    const c = add(new THREE.OctahedronGeometry(1.6), col, s.x * 1.125, 2.2, s.z * 1.125, mapRoot);
     c.material.emissive.setHex(col);
     c.material.emissiveIntensity = 0.6;
     crystals.push(c);
@@ -70,16 +86,16 @@ function buildMap({ half, obst, spawns, bushes: bushList }, mySlot) {
 
   // 外周の壁
   [[0, -half, half * 2, 1], [0, half, half * 2, 1], [-half, 0, 1, half * 2], [half, 0, 1, half * 2]]
-    .forEach(([x, z, w, d]) => add(new THREE.BoxGeometry(w, 3, d), 0x1b2226, x, 1.5, z));
+    .forEach(([x, z, w, d]) => add(new THREE.BoxGeometry(w, 3, d), 0x1b2226, x, 1.5, z, mapRoot));
 
   // 障害物（木と岩を交互に）
   obst.forEach((o, i) => {
     if (Math.floor(i / 2) % 2) {
-      const r = add(new THREE.DodecahedronGeometry(o.r), 0x6b7078, o.x, o.r * 0.6, o.z);
+      const r = add(new THREE.DodecahedronGeometry(o.r), 0x6b7078, o.x, o.r * 0.6, o.z, mapRoot);
       r.scale.y = 0.8;
     } else {
-      add(new THREE.CylinderGeometry(0.35, 0.45, o.r * 1.4, 8), 0x5a4030, o.x, o.r * 0.7, o.z);
-      add(new THREE.ConeGeometry(o.r, o.r * 3.2, 8), 0x2f6b45, o.x, o.r * 2.2, o.z);
+      add(new THREE.CylinderGeometry(0.35, 0.45, o.r * 1.4, 8), 0x5a4030, o.x, o.r * 0.7, o.z, mapRoot);
+      add(new THREE.ConeGeometry(o.r, o.r * 3.2, 8), 0x2f6b45, o.x, o.r * 2.2, o.z, mapRoot);
     }
   });
 
@@ -87,12 +103,12 @@ function buildMap({ half, obst, spawns, bushes: bushList }, mySlot) {
   bushList.forEach((b, i) => {
     const mats = [];
     const track = m => { m.material.transparent = true; mats.push(m.material); return m; };
-    track(add(new THREE.CylinderGeometry(b.r, b.r, 0.06, 28), 0x23542f, b.x, 0.03, b.z, scene, false));
+    track(add(new THREE.CylinderGeometry(b.r, b.r, 0.06, 28), 0x23542f, b.x, 0.03, b.z, mapRoot, false));
     const n = Math.round(b.r * 4);
     for (let k = 0; k < n; k++) {
       const rr = b.r * 0.85 * Math.sqrt((k + 0.5) / n), a = k * 2.39996 + i;   // ひまわり状に敷き詰める
       const s = 0.55 + ((k * 7 + i * 3) % 5) * 0.1;
-      track(add(new THREE.IcosahedronGeometry(s, 1), k % 2 ? 0x2f8a46 : 0x3a9d52, b.x + Math.cos(a) * rr, s * 0.9, b.z + Math.sin(a) * rr, scene, false));
+      track(add(new THREE.IcosahedronGeometry(s, 1), k % 2 ? 0x2f8a46 : 0x3a9d52, b.x + Math.cos(a) * rr, s * 0.9, b.z + Math.sin(a) * rr, mapRoot, false));
     }
     bushes.push({ ...b, mats, op: 1 });
   });
@@ -145,7 +161,20 @@ function makeRobot(color) {
   return { g, mats, legL, legR, armL, armR };
 }
 
-// ロボットの頭上HPバー（カメラの向きに合わせて常に正面表示）
+// 防衛タワー
+function makeTower(color) {
+  const g = new THREE.Group(), mats = [];
+  const part = (geo, c, y) => { const m = add(geo, c, 0, y, 0, g); mats.push(m.material); return m; };
+  part(new THREE.CylinderGeometry(1.1, 1.25, 0.5, 12), 0x687784, 0.25);
+  part(new THREE.CylinderGeometry(0.65, 0.85, 2.7, 10), color, 1.85);
+  part(new THREE.CylinderGeometry(1, 0.7, 0.45, 10), 0x9eabb4, 3.35);
+  const core = part(new THREE.OctahedronGeometry(0.65), color, 4.05);
+  core.material.emissive.setHex(color);
+  core.material.emissiveIntensity = 0.6;
+  return { g, mats };
+}
+
+// 頭上HPバー（カメラの向きに合わせて常に正面表示）
 function makeBar() {
   const bar = new THREE.Group();
   const bg = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.12), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.6, depthTest: false }));
@@ -160,21 +189,29 @@ function makeBar() {
 
 // ---------- ネットワーク状態 ----------
 let myId = null, mySlot = 0, cfg = null;
+let phase = 'waiting';
 const ents = {};    // 見えているプレイヤー / ロボット（id → 表示用データ）
 const fxs = [];
 
 function ensure(s, kind) {
   if (ents[s.id]) return ents[s.id];
   const color = s.slot === mySlot ? ALLY : ENEMY;
-  const h = kind === 'robot' ? makeRobot(color) : makeHuman(color);
+  const h = kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : makeHuman(color);
   h.g.position.set(s.x, 0, s.z);
   scene.add(h.g);
-  return (ents[s.id] = Object.assign(h, { kind, bar: kind === 'robot' ? makeBar() : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
+  return (ents[s.id] = Object.assign(h, { kind, bar: kind !== 'human' ? makeBar() : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
 }
 
 socket.on('init', d => {
+  [...mapRoot.children].forEach(disposeObject);
+  crystals.length = 0; bushes.length = 0;
+  for (const id of Object.keys(ents)) {
+    disposeObject(ents[id].g);
+    if (ents[id].bar) disposeObject(ents[id].bar);
+    delete ents[id];
+  }
   myId = d.id; mySlot = d.slot; cfg = d.cfg;
-  if (mySlot === 1) CAM_OFF.set(0, 26, -20);          // 相手側スポーンの人は視点を180°回転 → 自分は左下・青
+  CAM_OFF.set(0, 26, mySlot === 1 ? -20 : 20);
   const sp = d.map.spawns[mySlot];
   camera.position.set(sp.x + CAM_OFF.x, CAM_OFF.y, sp.z + CAM_OFF.z);
   camera.lookAt(sp.x, 0, sp.z);
@@ -184,22 +221,25 @@ socket.on('init', d => {
 socket.on('full', () => { $('msg').textContent = '満員です（2人まで）'; });
 
 socket.on('state', st => {
+  phase = st.phase;
   const seen = new Set();
   st.players.forEach(s => { if (s.vis) { seen.add(s.id); ensure(s, 'human').s = s; } });   // ブッシュ内の敵は vis=false で座標なし
   st.robots.forEach(s => { seen.add(s.id); ensure(s, 'robot').s = s; });
+  st.towers.forEach(s => { seen.add(s.id); ensure(s, 'tower').s = s; });
   Object.keys(ents).forEach(id => {
     if (seen.has(id)) return;
-    scene.remove(ents[id].g);
-    if (ents[id].bar) scene.remove(ents[id].bar);
+    disposeObject(ents[id].g);
+    if (ents[id].bar) disposeObject(ents[id].bar);
     delete ents[id];
   });
-  hud(st.players);
+  hud(st);
 });
 
 socket.on('fx', d => {
   const e = ents[d.id];
   if (!e) return;
   e.swing = 0.25;
+  if (e.kind === 'tower') arc(d.x, d.z, d.face, cfg.tower.range, 0.06);
   if (d.kind === 'q') arc(d.x, d.z, d.face, cfg.qRange, cfg.qArc);
 });
 
@@ -210,7 +250,8 @@ socket.on('hit', d => {
   dmgText(e, d.dmg);
 });
 
-function hud(list) {
+function hud(st) {
+  const list = st.players;
   const m = list.find(s => s.id === myId), f = list.find(s => s.id !== myId);
   if (!m || !cfg) return;
   $('playerHpFill').style.width = `${Math.max(0, m.hp / cfg.maxHp) * 100}%`;
@@ -219,8 +260,19 @@ function hud(list) {
   $('eCooldown').style.height = `${(m.eCd / cfg.eCd) * 100}%`;
   $('cCooldown').style.height = `${(m.cCd / cfg.cCd) * 100}%`;
   $('score').textContent = `${m.kills} - ${f ? f.kills : 0}`;
-  $('msg').textContent = !f ? '対戦相手を待っています…' : m.dead ? 'リスポーン中…' : '';
+  const own = st.towers.filter(t => t.slot === mySlot && !t.dead).length;
+  const enemy = st.towers.filter(t => t.slot !== mySlot && !t.dead).length;
+  $('objective').textContent = `タワー残り　自陣 ${own}/5　敵陣 ${enemy}/5`;
+  $('status').textContent = `${st.solo ? '1人用テスト' : 'オンライン対戦'}｜復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}`;
+  $('msg').textContent = st.phase === 'finished' ? (st.winner === mySlot ? '勝利！ 敵タワーを全て破壊しました' : '敗北 — 自陣タワーが全て破壊されました')
+    : st.phase === 'waiting' ? '対戦相手を待っています…（1人用テストも選べます）'
+    : m.dead ? `リスポーンまで ${Math.ceil(m.respawn)}秒` : '';
 }
+
+$('restart').hidden = !soloMode;
+$('restart').addEventListener('click', () => socket.emit('restart'));
+socket.on('disconnect', reason => { phase = 'waiting'; if (reason !== 'io server disconnect') $('msg').textContent = '接続が切れました。再接続中…'; });
+socket.on('connect_error', () => { $('msg').textContent = '接続できません。サーバーを確認してください'; });
 
 // ---------- エフェクト ----------
 function arc(x, z, face, r, half) {
@@ -245,7 +297,7 @@ function marker(p) {
 }
 
 function dmgText(e, n) {
-  const v = new THREE.Vector3(e.x, e.kind === 'robot' ? 1.9 : 2.8, e.z).project(camera);
+  const v = new THREE.Vector3(e.x, e.kind === 'tower' ? 4.8 : e.kind === 'robot' ? 1.9 : 2.8, e.z).project(camera);
   const d = document.createElement('div');
   d.className = 'dmg';
   d.textContent = n;
@@ -271,11 +323,17 @@ function groundAt(ev) {
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('mousemove', ev => { mouse = ev; });
 canvas.addEventListener('mousedown', ev => {
-  if (ev.button !== 2 || !myId) return;
+  if (ev.button !== 2 || !myId || phase !== 'playing') return;
   const g = groundAt(ev);
-  let foe = null, best = 1.6;                       // カーソルに最も近い、見えている敵（プレイヤー or ロボット）
-  for (const e of Object.values(ents)) {
-    if (e.s.slot === mySlot || e.s.dead) continue;
+  const enemies = Object.values(ents).filter(e => e.s.slot !== mySlot && !e.s.dead);
+  // タワーの上部をクリックしても、そのタワーを選択する。
+  const picked = ray.intersectObjects(enemies.map(e => e.g), true)[0];
+  let foe = picked && enemies.find(e => {
+    for (let o = picked.object; o; o = o.parent) if (o === e.g) return true;
+    return false;
+  });
+  let best = 1.6;
+  for (const e of foe ? [] : enemies) {
     const d = Math.hypot(e.x - g.x, e.z - g.z);
     if (d < best) { best = d; foe = e; }
   }
@@ -283,7 +341,7 @@ canvas.addEventListener('mousedown', ev => {
   else { socket.emit('move', g); marker(g); }
 });
 addEventListener('keydown', ev => {
-  if (ev.repeat || !myId) return;
+  if (ev.repeat || !myId || phase !== 'playing' || ev.target.closest('button, a')) return;
   const k = ev.key.toLowerCase();
   if (k === 'q' || k === 'e') socket.emit(k === 'q' ? 'q' : 'dash', groundAt(mouse));
   else if (k === 'c') socket.emit('c');
@@ -303,6 +361,16 @@ function frame() {
 
     e.swing = Math.max(0, e.swing - dt);
     e.flash = Math.max(0, e.flash - dt);
+    if (e.kind === 'tower') {
+      e.g.scale.y = s.dead ? 0.12 : 1;
+      e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : 0x000000));
+      e.bar.visible = !s.dead;
+      e.bar.position.set(e.x, 4.9, e.z);
+      e.bar.quaternion.copy(camera.quaternion);
+      e.bar.scale.setScalar(2.5);
+      e.bar.fill.scale.x = Math.max(0.001, s.hp / cfg.tower.hp);
+      continue;
+    }
     if (s.moving) e.phase += dt * 11;
     const w = s.moving ? Math.sin(e.phase) * 0.9 : 0;
 
@@ -341,7 +409,7 @@ function frame() {
     const f = fxs[i];
     f.t += dt;
     f.m.opacity = 0.8 * (1 - f.t / f.life);
-    if (f.t >= f.life) { scene.remove(f.g); f.m.dispose(); fxs.splice(i, 1); }
+    if (f.t >= f.life) { disposeObject(f.g); fxs.splice(i, 1); }
   }
 
   renderer.render(scene, camera);

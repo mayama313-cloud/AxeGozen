@@ -4,9 +4,9 @@ const { createMatch, CFG, MAP, TICK, CHARACTERS, configFor } = require('./game-w
 
 function socket(id) {
   return {
-    id, handlers: {}, events: {},
+    id, handlers: {}, events: {}, killEvents: [],
     on(event, fn) { this.handlers[event] = fn; },
-    emit(event, data) { this.events[event] = data; },
+    emit(event, data) { this.events[event] = data; if (event === 'kill') this.killEvents.push(data); },
     send(event, data) { this.handlers[event](data); },
     disconnect() { this.closed = true; },
   };
@@ -494,7 +494,7 @@ test('Magic Scout is a fast projectile that pulls the first enemy and stuns for 
   a.send('c', aim(q)); assert.equal(p.cCd, 8); assert.equal(Object.keys(match.state.robots).length, 0);
   assert.equal(Object.keys(match.state.projectiles).length, 1); match.tick();
   assert.equal(Object.values(match.state.projectiles)[0].x, 45 / TICK);
-  ticks(match, 2); assert.equal(q.stun, 1.5); assert.equal(q.hp, 200); assert.equal(Object.keys(match.state.projectiles).length, 0);
+  ticks(match, 2); assert.equal(q.stun, 1.5); assert.equal(q.hp, 170); assert.equal(Object.keys(match.state.projectiles).length, 0);
   ticks(match, 10); assert.ok(q.x < 2 && q.x >= p.radius + q.radius); assert.ok(q.stun > 1);
   ticks(match, 35); assert.equal(q.stun, 0);
 });
@@ -517,8 +517,74 @@ test('Magic Scout hits minions before a player and cannot pull a target through 
   robots.guard = { id: 'guard', owner: q.id, character: 'bastion', slot: 1, radius: 0.4, hp: 70, maxHp: 70, life: 20,
     cfg: { ...CFG.robot, speed: 0 }, x: 4, z: 0, face: 0, atkCd: 100, stun: 0, bush: -1 };
   a.send('c', aim(q)); ticks(match, 3); assert.ok(robots.guard.stun > 1.4); assert.equal(q.stun, 0);
-  ticks(match, 5); assert.ok(robots.guard.x < 2); assert.equal(robots.guard.hp, 70);
+  ticks(match, 5); assert.ok(robots.guard.x < 2); assert.equal(robots.guard.hp, 40);
   // 引き寄せ中に召喚者が岩の向こうへ移動しても、岩を通り抜けない。
   place(q, -4, 0); place(p, -12, 0); q.pull = { caster: p.id, remaining: 6 }; q.stun = 1.5;
   ticks(match, 10); assert.ok(q.x >= -5.3); assert.equal(q.pull, null);
+});
+
+test('Mira Q reaches twice its previous range and stuns for exactly two seconds', () => {
+  const { match, a, b, p, q } = setup(false, ['mira', 'alex']); place(p, 0, 0); place(q, 10, 4);
+  assert.equal(p.cfg.qRange, 14); a.send('q', aim(q));
+  assert.equal(q.hp, 200 - 22); assert.equal(q.stun, 2);
+  b.send('move', { x: 0, z: 0 }); assert.equal(q.dest, null);
+  ticks(match, 59); assert.ok(q.stun > 0); match.tick(); assert.equal(q.stun, 0);
+  p.qCd = 0; place(q, 18, 0); const hp = q.hp; a.send('q', aim(q)); assert.equal(q.hp, hp);
+});
+
+test('player deaths emit one shared kill log without hidden coordinates and retain player kill credit', () => {
+  const { a, b, p, q } = setup(); place(p, 0, 0); place(q, 1.5, 0); q.hp = 1;
+  a.send('q', aim(q)); assert.equal(p.kills, 1);
+  assert.equal(a.killEvents.length, 1); assert.deepEqual(a.killEvents, b.killEvents);
+  const event = a.killEvents[0]; assert.equal(event.attacker.kind, 'player'); assert.equal(event.victim.kind, 'player');
+  assert.equal(event.attacker.name, 'アレックス'); assert.equal(event.victim.slot, 1);
+  assert.ok(!('x' in event.attacker) && !('z' in event.victim));
+  p.qCd = 0; a.send('q', aim(q)); assert.equal(a.killEvents.length, 1);
+});
+
+test('minion deaths have a kill log before removal and do not count as player kills', () => {
+  const { a, b, p, q, robots } = setup(); b.send('c');
+  const r = Object.values(robots)[0]; place(r, 1.5, 0); r.hp = 1;
+  place(p, 0, 0); place(q, 20, 20); a.send('q', aim(r));
+  assert.equal(robots[r.id], undefined); assert.equal(a.killEvents.length, 1);
+  assert.equal(a.killEvents[0].victim.kind, 'minion'); assert.equal(a.killEvents[0].victim.name, 'アレックスのミニオン');
+  assert.equal(p.kills, 0);
+});
+
+test('minion player kills identify the minion as attacker and credit the owner', () => {
+  const { match, a, p, q, robots } = setup(); a.send('c');
+  const r = Object.values(robots)[0]; place(r, 0, 0); place(q, 1.5, 0); q.hp = 1;
+  match.tick(); assert.equal(p.kills, 1); assert.equal(a.killEvents.length, 1);
+  assert.equal(a.killEvents[0].attacker.kind, 'minion'); assert.equal(a.killEvents[0].victim.id, q.id);
+});
+
+test('tower destruction and tower attacks both emit kill logs with correct attribution', () => {
+  const { match, a, p, q, towers } = setup(); const enemy = towers['t1-2'];
+  place(p, enemy.x - 3, enemy.z); enemy.hp = 1; a.send('q', aim(enemy));
+  assert.equal(a.killEvents[0].victim.kind, 'tower'); assert.equal(a.killEvents[0].victim.name, 'タワー 3');
+  const ally = towers['t0-2']; place(q, ally.x + 3, ally.z); q.hp = 1; ally.atkCd = 0;
+  match.tick(); assert.equal(a.killEvents.length, 2); assert.equal(a.killEvents[1].attacker.kind, 'tower');
+  assert.equal(a.killEvents[1].victim.id, q.id); assert.equal(p.kills, 0);
+});
+
+test('Magic Scout lethal damage triggers player and minion kill logs without pulling dead targets', () => {
+  for (const kind of ['player', 'minion']) {
+    const { match, a, p, q, robots } = setup(false, ['mira', 'alex']); place(p, 0, 0); place(q, 5, 0);
+    let victim = q;
+    if (kind === 'minion') {
+      place(q, 20, 20);
+      victim = robots.guard = { id: 'guard', owner: q.id, character: 'bastion', slot: 1, radius: 0.4, hp: 30, maxHp: 70, life: 20,
+        cfg: { ...CFG.robot, speed: 0 }, x: 4, z: 0, face: 0, atkCd: 100, stun: 0, bush: -1 };
+    }
+    victim.hp = 30; a.send('c', aim(victim)); ticks(match, 4);
+    assert.equal(victim.dead, true); assert.ok(!victim.pull); assert.equal(a.killEvents.length, 1);
+    assert.equal(a.killEvents[0].victim.kind, kind); assert.equal(a.killEvents[0].attacker.character, 'mira');
+    assert.equal(p.kills, kind === 'player' ? 1 : 0);
+  }
+});
+
+test('Bastion shield reduces Magic Scout damage to 15 while preserving its control effects', () => {
+  const { match, a, b, p, q } = setup(false, ['mira', 'bastion']); place(p, 0, 0); place(q, 5, 0);
+  b.send('dash'); a.send('c', aim(q)); ticks(match, 3);
+  assert.equal(q.hp, 280 - 15); assert.equal(q.stun, 1.5); assert.ok(q.pull);
 });

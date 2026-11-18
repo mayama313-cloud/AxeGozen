@@ -205,9 +205,32 @@ function makeProjectile() {
 // ---------- ネットワーク状態 ----------
 let myId = null, mySlot = 0, cfg = null;
 let phase = 'waiting';
-let leapAiming = false, mapData = null;
+let mapData = null;
 const ents = {};    // 見えているプレイヤー / ロボット（id → 表示用データ）
 const fxs = [];
+const killTimers = new Set();
+function clearKillFeed() {
+  for (const timer of killTimers) clearTimeout(timer);
+  killTimers.clear(); $('killFeed').replaceChildren();
+}
+socket.on('kill', d => {
+  const entry = document.createElement('div');
+  entry.className = `kill-entry${d.attacker.slot === mySlot ? '' : ' enemy'}`;
+  const time = document.createElement('time'), killer = document.createElement('span'), victim = document.createElement('span');
+  const seconds = Math.floor(d.time);
+  time.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  const label = e => e.id === myId ? `自分（${e.name}）` : `${e.slot === mySlot ? '味方' : '敵'} ${e.name}`;
+  killer.className = 'killer'; killer.textContent = label(d.attacker);
+  victim.textContent = ` → ${label(d.victim)}${d.victim.kind === 'tower' ? 'を破壊' : 'を撃破'}`;
+  entry.append(time, killer, victim); $('killFeed').prepend(entry);
+  while ($('killFeed').children.length > 5) $('killFeed').lastElementChild.remove();
+  const later = (fn, delay) => {
+    const timer = setTimeout(() => { killTimers.delete(timer); fn(); }, delay);
+    killTimers.add(timer);
+  };
+  later(() => entry.classList.add('fading'), 7500);
+  later(() => entry.remove(), 8000);
+});
 
 function ensure(s, kind) {
   if (ents[s.id] && ents[s.id].s.character !== s.character) {
@@ -224,6 +247,8 @@ function ensure(s, kind) {
 }
 
 socket.on('init', d => {
+  skillAim.cancel();
+  clearKillFeed();
   clearKeys();
   [...mapRoot.children].forEach(disposeObject);
   crystals.length = 0; bushes.length = 0;
@@ -233,7 +258,7 @@ socket.on('init', d => {
     delete ents[id];
   }
   myId = d.id; mySlot = d.slot; cfg = d.cfg;
-  mapData = d.map; leapAiming = false;
+  mapData = d.map;
   CAM_OFF.set(0, 26, mySlot === 1 ? -20 : 20);
   const sp = d.map.spawns[mySlot];
   camera.position.set(sp.x + CAM_OFF.x, CAM_OFF.y, sp.z + CAM_OFF.z);
@@ -247,13 +272,12 @@ socket.on('state', st => {
   phase = st.phase;
   const self = st.players.find(p => p.id === myId);
   if (self?.character) cfg = ArenaWorld.configFor(self.character);
-  leapAiming = !!self?.aiming && phase === 'playing' && !self.dead && self.stun <= 0;
-  canvas.style.cursor = leapAiming ? 'crosshair' : '';
   const seen = new Set();
   st.players.forEach(s => { if (s.vis) { seen.add(s.id); ensure(s, 'human').s = s; } });   // ブッシュ内の敵は vis=false で座標なし
   st.robots.forEach(s => { seen.add(s.id); ensure(s, 'robot').s = s; });
   st.towers.forEach(s => { seen.add(s.id); ensure(s, 'tower').s = s; });
   st.projectiles.forEach(s => { seen.add(s.id); ensure(s, 'projectile').s = s; });
+  skillAim.update();
   Object.keys(ents).forEach(id => {
     if (seen.has(id)) return;
     disposeObject(ents[id].g);
@@ -309,13 +333,13 @@ function hud(st) {
     : st.phase === 'waiting' ? '対戦相手を待っています…（1人用テストも選べます）'
     : m.dead ? `リスポーンまで ${Math.ceil(m.respawn)}秒`
     : m.stun > 0 ? 'スタン中'
-    : leapAiming ? 'ラッシュ：着地点を左クリック（右クリック・Escでキャンセル）'
+    : skillAim.current ? `${character.skills[skillAim.current.key].name}：キーを離すか左クリックで発動（右クリック・Escでキャンセル）`
     : m.recall > 0 ? `リコール中… ${m.recall.toFixed(1)}秒（移動・攻撃・被ダメージで中断）` : '';
 }
 
-$('restart').addEventListener('click', () => socket.emit('restart'));
-socket.on('lobby', () => { phase = 'waiting'; leapAiming = false; clearKeys(); myId = null; });
-socket.on('disconnect', reason => { phase = 'waiting'; clearKeys(); if (reason !== 'io server disconnect') $('msg').textContent = '接続が切れました。再接続中…'; });
+$('restart').addEventListener('click', () => { skillAim.cancel(); clearKillFeed(); socket.emit('restart'); });
+socket.on('lobby', () => { skillAim.cancel(); clearKillFeed(); phase = 'waiting'; clearKeys(); myId = null; });
+socket.on('disconnect', reason => { skillAim.cancel(); phase = 'waiting'; clearKeys(); if (reason !== 'io server disconnect') $('msg').textContent = '接続が切れました。再接続中…'; });
 socket.on('connect_error', () => { $('msg').textContent = '接続できません。サーバーを確認してください'; });
 
 // ---------- エフェクト ----------
@@ -356,7 +380,7 @@ function dmgText(e, n, boosted = false) {
 const ray = new THREE.Raycaster();
 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const pt = new THREE.Vector3(), ndc = new THREE.Vector2();
-let mouse = { clientX: 0, clientY: 0 }, aim = { x: 0, z: 0 };
+let mouse = { clientX: innerWidth / 2, clientY: innerHeight / 2 }, aim = { x: 0, z: 0 };
 const heldKeys = new Set();
 let lastSteer = 0;
 function aimRing(color) {
@@ -364,6 +388,28 @@ function aimRing(color) {
   mesh.rotation.x = -Math.PI / 2; mesh.visible = false; scene.add(mesh); return mesh;
 }
 const leapRangeRing = aimRing(0x8fd9ff), leapPointRing = aimRing(0x8be0a0);
+const skillArea = new THREE.Group();
+const skillAreaMesh = new THREE.Mesh(new THREE.CircleGeometry(1, 48), new THREE.MeshBasicMaterial({ color: 0x72d8ff, side: THREE.DoubleSide, transparent: true, opacity: 0.22, depthWrite: false }));
+skillAreaMesh.rotation.x = -Math.PI / 2; skillArea.add(skillAreaMesh); skillArea.visible = false; scene.add(skillArea);
+const skillLine = new THREE.Group();
+const skillLineMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0x72ffff, side: THREE.DoubleSide, transparent: true, opacity: 0.4, depthWrite: false }));
+skillLineMesh.rotation.x = -Math.PI / 2; skillLine.add(skillLineMesh);
+const skillArrow = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.7, 3), new THREE.MeshBasicMaterial({ color: 0x9bffff }));
+skillArrow.rotation.x = Math.PI / 2; skillLine.add(skillArrow); skillLine.visible = false; scene.add(skillLine);
+const skillAim = createSkillAim({
+  self: () => ents[myId]?.s,
+  playing: () => phase === 'playing',
+  point: () => groundAt(mouse),
+  validLeap: validLeapPoint,
+  emit: (event, data) => { if (event === 'leap') clearKeys(); socket.emit(event, data); },
+  changed: current => {
+    canvas.style.cursor = current ? 'crosshair' : '';
+    if (current?.kind === 'cone') {
+      skillAreaMesh.geometry.dispose();
+      skillAreaMesh.geometry = new THREE.CircleGeometry(1, 64, -cfg.qArc, cfg.qArc * 2);
+    }
+  },
+});
 function validLeapPoint(point, self) {
   if (!mapData || Math.hypot(point.x - self.x, point.z - self.z) > cfg.leapRange || Math.abs(point.x) > mapData.half - 1 || Math.abs(point.z) > mapData.half - 1) return false;
   const blocks = [...mapData.obst, ...Object.values(ents).filter(e => e.kind === 'tower' && !e.s.dead).map(e => ({ x: e.x, z: e.z, r: cfg.tower.radius }))];
@@ -382,10 +428,14 @@ function clearKeys() {
   heldKeys.clear();
   if (myId && socket.connected) sendKeys();
 }
-addEventListener('blur', clearKeys);
-document.addEventListener('visibilitychange', () => { if (document.hidden) clearKeys(); });
+addEventListener('blur', () => { skillAim.cancel(); clearKeys(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { skillAim.cancel(); clearKeys(); } });
+document.addEventListener('pointerdown', ev => { if (ev.target !== canvas) skillAim.cancel(); }, { capture: true });
 addEventListener('keyup', ev => {
-  if (heldKeys.delete(ev.key.toLowerCase())) sendKeys();
+  const key = ev.key.toLowerCase();
+  if (heldKeys.delete(key)) sendKeys();
+  if (ev.target.closest('button, a, input, textarea, select, [contenteditable]')) skillAim.cancel();
+  else skillAim.release(key);
 });
 
 function groundAt(ev) {
@@ -399,12 +449,9 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('mousemove', ev => { mouse = ev; });
 canvas.addEventListener('mousedown', ev => {
   if (!myId || phase !== 'playing') return;
-  if (leapAiming) {
-    if (ev.button === 2) socket.emit('cancelLeap');
-    else if (ev.button === 0) {
-      const point = groundAt(ev), self = ents[myId]?.s;
-      if (self && validLeapPoint(point, self)) { clearKeys(); socket.emit('leap', point); }
-    }
+  if (skillAim.current) {
+    if (ev.button === 2) skillAim.cancel();
+    else if (ev.button === 0) skillAim.confirm(groundAt(ev));
     return;
   }
   if (ev.button !== 2) return;
@@ -425,15 +472,15 @@ canvas.addEventListener('mousedown', ev => {
   else { socket.emit('move', g); marker(g); }
 });
 addEventListener('keydown', ev => {
-  if (ev.repeat || !myId || phase !== 'playing' || ev.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
+  if (ev.repeat || ev.ctrlKey || ev.metaKey || ev.altKey || !myId || phase !== 'playing' || ev.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
   const k = ev.key.toLowerCase();
-  if (k === 'escape') { socket.emit('cancelLeap'); return; }
-  if (leapAiming && ['q', 'c', 'b'].includes(k)) socket.emit('cancelLeap');
+  if (k === 'escape') { skillAim.cancel(); return; }
   if ('wasd'.includes(k) && k.length === 1) {
     ev.preventDefault(); heldKeys.add(k); sendKeys();
-  } else if (k === 'q' || k === 'e') socket.emit(k === 'q' ? 'q' : 'dash', groundAt(mouse));
-  else if (k === 'c') socket.emit('c', groundAt(mouse));
-  else if (k === 'b') { clearKeys(); socket.emit('recall'); }
+  } else if (['q', 'c'].includes(k) || (k === 'e' && ents[myId]?.s.character === 'alex')) {
+    ev.preventDefault(); skillAim.begin(k);
+  } else if (k === 'e') { skillAim.cancel(); socket.emit('dash'); }
+  else if (k === 'b') { skillAim.cancel(); clearKeys(); socket.emit('recall'); }
 });
 
 // ---------- 描画ループ ----------
@@ -482,12 +529,28 @@ function frame() {
   }
 
   const me = ents[myId];
-  leapRangeRing.visible = leapPointRing.visible = leapAiming && !!me && phase === 'playing';
-  if (leapRangeRing.visible) {
+  const targeting = skillAim.current, showingAim = !!targeting && !!me && phase === 'playing';
+  leapRangeRing.visible = showingAim && ['leap', 'cone'].includes(targeting.kind);
+  leapPointRing.visible = showingAim && targeting.kind === 'leap';
+  skillArea.visible = showingAim && targeting.kind === 'cone';
+  skillLine.visible = showingAim && ['projectile', 'summon'].includes(targeting.kind);
+  if (showingAim) {
     const point = groundAt(mouse);
-    leapRangeRing.position.set(me.x, 0.14, me.z); leapRangeRing.scale.setScalar(cfg.leapRange);
-    leapPointRing.position.set(point.x, 0.15, point.z); leapPointRing.scale.setScalar(cfg.leapHitRange);
-    leapPointRing.material.color.setHex(validLeapPoint(point, me.s) ? 0x8be0a0 : 0xff4545);
+    const face = Math.atan2(point.x - me.x, point.z - me.z);
+    leapRangeRing.position.set(me.x, 0.14, me.z);
+    leapRangeRing.scale.setScalar(targeting.kind === 'leap' ? cfg.leapRange : cfg.qRange);
+    if (targeting.kind === 'leap') {
+      leapPointRing.position.set(point.x, 0.15, point.z); leapPointRing.scale.setScalar(cfg.leapHitRange);
+      leapPointRing.material.color.setHex(validLeapPoint(point, me.s) ? 0x8be0a0 : 0xff4545);
+    } else if (targeting.kind === 'cone') {
+      skillArea.position.set(me.x, 0.13, me.z); skillArea.rotation.y = face - Math.PI / 2;
+      skillArea.scale.setScalar(cfg.qRange);
+    } else {
+      const length = targeting.kind === 'projectile' ? cfg.magicRange : 2.4;
+      skillLine.position.set(me.x, 0.15, me.z); skillLine.rotation.y = face;
+      skillLineMesh.scale.set(targeting.kind === 'projectile' ? cfg.magicRadius * 2 : 0.5, length, 1);
+      skillLineMesh.position.z = length / 2; skillArrow.position.set(0, 0, length);
+    }
   }
   if (me) {
     const target = new THREE.Vector3(me.x, 0, me.z).add(CAM_OFF);

@@ -28,6 +28,20 @@
   .dmg { position: fixed; transform: translate(-50%, -50%); color: #ffd36a; font-weight: 700; font-size: 20px; text-shadow: 0 1px 3px #000; pointer-events: none; animation: rise .7s forwards; }
   @keyframes rise { to { transform: translate(-50%, -170%); opacity: 0; } }
   [hidden] { display: none !important; }
+  #audioPanel { position: fixed; right: 14px; bottom: 18px; z-index: 40; width: 215px; box-sizing: border-box; border: 1px solid #8eafbd; border-radius: 6px; background: #14252ef2; font-size: 12px; box-shadow: 0 4px 20px #0005; }
+  #audioPanel summary { padding: 10px 12px; cursor: pointer; }
+  .audio-body { padding: 0 12px 12px; }
+  .audio-body label { display: flex; justify-content: space-between; margin-top: 10px; }
+  .audio-body input { width: 100%; accent-color: #e6c15a; margin: 8px 0; }
+  #audioMute { font: inherit; color: #eef3f6; background: #203d4c; border: 1px solid #8eafbd; border-radius: 4px; padding: 6px 12px; cursor: pointer; }
+  #audioStatus { color: #b1c4ce; margin: 9px 0 0; font-size: 10px; }
+  #killFeed { position: fixed; top: 110px; right: 14px; width: min(440px, 70vw); display: flex; flex-direction: column; gap: 7px; font-size: 13px; }
+  .kill-entry { padding: 10px 12px; border-left: 3px solid #59b8e0; border-radius: 4px; background: #101c28e8; box-shadow: 0 2px 8px #0005; animation: kill-in .2s ease-out; }
+  .kill-entry.enemy { border-color: #e16b60; }
+  .kill-entry time { margin-right: 8px; color: #9db3c2; font-size: 11px; }
+  .kill-entry .killer { color: #8ed8f5; } .kill-entry.enemy .killer { color: #ff9b8c; }
+  .kill-entry.fading { opacity: 0; transition: opacity .5s; }
+  @keyframes kill-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
   #lobby { position: fixed; inset: 0; z-index: 30; overflow: auto; background: radial-gradient(ellipse at top, #24444c, #10161af7 65%); display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
   .lobby-panel { width: min(1120px, 100%); margin: auto; }
   .eyebrow { color: #e6c15a; letter-spacing: .2em; font-size: 12px; }
@@ -56,6 +70,17 @@
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
+<details id="audioPanel">
+  <summary id="audioSummary">音声設定 · ON</summary>
+  <div class="audio-body">
+    <label for="musicVolume">BGM <output id="musicValue" for="musicVolume">22%</output></label>
+    <input id="musicVolume" type="range" min="0" max="100" value="22">
+    <label for="effectsVolume">効果音 <output id="effectsValue" for="effectsVolume">55%</output></label>
+    <input id="effectsVolume" type="range" min="0" max="100" value="55">
+    <button id="audioMute" type="button" aria-pressed="false">ミュート</button>
+    <p id="audioStatus">画面をクリックすると再生</p>
+  </div>
+</details>
 <main id="lobby">
   <section id="lobbyHome" class="lobby-panel">
     <div class="eyebrow">AXE GOZEN / 1 vs 1</div>
@@ -90,18 +115,21 @@
   <button id="restart" type="button" hidden>最初からテスト</button>
 </nav>
 <div id="msg">接続中…</div>
+<div id="killFeed" role="log" aria-live="polite" aria-label="キルログ" aria-relevant="additions"></div>
 <div id="skills">
   <div class="sk" id="qSkill">Q<small id="qLabel">Qスキル</small><b id="qCooldown"></b></div>
   <div class="sk" id="eSkill">E<small id="eLabel">Eスキル</small><b id="eCooldown"></b></div>
   <div class="sk" id="cSkill">C<small id="cLabel">Cスキル</small><b id="cCooldown"></b></div>
   <div class="sk" title="5秒間で自陣に帰還。移動・攻撃・被ダメージで中断">B<small>リコール</small><b id="recallProgress"></b></div>
 </div>
-<div id="help">WASD: 移動 / 右クリック: 移動・敵やタワーを攻撃 / Q・E・C: キャラクタースキル / B: 5秒リコール（移動・攻撃・被ダメージで中断、Bでキャンセル）<br>敵タワー5本を全て破壊すると勝利。復活は5秒＋自陣の破壊済みタワー数×5秒。</div>
+<div id="help">WASD: 移動 / 右クリック: 移動・通常攻撃 / 攻撃スキル: キー長押しで照準、離すか左クリックで発動（右クリック・Escでキャンセル） / 強化スキル: 即時発動 / B: 5秒リコール<br>敵タワー5本を全て破壊すると勝利。復活は5秒＋自陣の破壊済みタワー数×5秒。</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 <script src="/game-world.js"></script>
 <script src="session.js"></script>
+<script src="audio.js"></script>
+<script src="skill-aim.js"></script>
 <script src="game.js"></script>
 <script src="lobby.js"></script>
 </body>

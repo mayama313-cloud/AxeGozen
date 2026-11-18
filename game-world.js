@@ -10,18 +10,18 @@ const CFG = {
   recallTime: 5, inputTimeout: 0.35,
   leapRange: 8, leapTime: 0.45, leapDmg: 50, leapStun: 1, leapHitRange: 2.4,
   windTime: 3, windMultiplier: 2,
-  magicRange: 14, magicSpeed: 45, magicRadius: 0.35, magicPull: 6, magicStun: 1.5,
+  magicRange: 14, magicSpeed: 45, magicRadius: 0.35, magicPull: 6, magicStun: 1.5, magicDmg: 30,
   respawn: 5, respawnPerTower: 5,
 };
 const R = CFG.robot;
 const CHARACTERS = [
   { id: 'alex', name: 'アレックス', role: 'タワー攻略', color: '#ee675d',
     passive: '攻城の血脈：自身と自身の召喚ユニットが、敵タワー・召喚ユニットに与えるダメージが2倍。適用時の攻撃は赤く発光。',
-    skills: { q: { name: 'クレセント', text: '前方を28ダメージで斬り、0.3秒スタン。' }, e: { name: 'ラッシュ', text: 'Eで照準、左クリックで射程8の着地点を確定。着地後に近くの敵1体へ50ダメージ・1秒スタン。CD30秒。右クリック・Escで照準解除。' }, c: { name: 'アサルト部隊', text: 'ミニオンを3体召喚。最大5体。他のユニットを避けて敵タワーへ進軍し、途中の敵と戦う。' } }, stats: { eCd: 30 }, robot: {} },
+    skills: { q: { name: 'クレセント', text: '前方を28ダメージで斬り、0.3秒スタン。' }, e: { name: 'ラッシュ', text: 'E長押しで照準、キーを離すか左クリックで射程8の着地点を確定。着地後に近くの敵1体へ50ダメージ・1秒スタン。CD30秒。右クリック・Escで照準解除。' }, c: { name: 'アサルト部隊', text: 'ミニオンを3体召喚。最大5体。他のユニットを避けて敵タワーへ進軍し、途中の敵と戦う。' } }, stats: { eCd: 30 }, robot: {} },
   { id: 'mira', name: 'ミラ', role: '機動力・遠めの範囲攻撃', color: '#7ddbd3',
     passive: '風の足取り：移動速度が9から11に上昇。',
-    skills: { q: { name: 'フロストファン', text: '射程7の扇形に22ダメージ、0.6秒スタン。' }, e: { name: 'ウィンドステップ', text: '3秒間、移動速度が2倍（11→22）。CD10秒。' }, c: { name: 'マジックスカウト', text: 'カーソル方向へ射程14の高速魔法を放つ。最初に当たった敵ユニットを最大6引き寄せ、1.5秒スタン。CD8秒。' } },
-    stats: { speed: 11, qRange: 7, qArc: Math.PI / 5, qDmg: 22, qStun: 0.6, qCd: 6, eCd: 10 }, robot: {} },
+    skills: { q: { name: 'フロストファン', text: '射程14の扇形に22ダメージ、2秒スタン。' }, e: { name: 'ウィンドステップ', text: '3秒間、移動速度が2倍（11→22）。CD10秒。' }, c: { name: 'マジックスカウト', text: 'カーソル方向へ射程14の高速魔法を放つ。最初に当たった敵ユニットに30ダメージ、最大6引き寄せ、1.5秒スタン。CD8秒。' } },
+    stats: { speed: 11, qRange: 14, qArc: Math.PI / 5, qDmg: 22, qStun: 2, qCd: 6, eCd: 10 }, robot: {} },
   { id: 'bastion', name: 'バスティオン', role: '耐久・防衛', color: '#e8bc65',
     passive: '不屈の体：最大HPが200から280に上昇。',
     skills: { q: { name: 'グラウンドブレイク', text: '周囲3.5の敵に20ダメージ、0.5秒スタン。' }, e: { name: 'アイアンガード', text: '2秒間、受けるダメージを50%軽減。クールダウン6秒。' }, c: { name: 'ガーディアン部隊', text: 'HP70・速度5・攻撃力4の守護ユニットを3体召喚。最大5体。' } },
@@ -48,7 +48,7 @@ const protectedUnit = e => !e.tower && dist(e, SPAWNS[e.slot]) <= CFG.safeRadius
 
 function createMatch(solo = false) {
   const players = {}, robots = {}, towers = {}, projectiles = {};
-  let robotSeq = 0, projectileSeq = 0, winner = null, phase = 'waiting';
+  let robotSeq = 0, projectileSeq = 0, killSeq = 0, elapsed = 0, winner = null, phase = 'waiting';
   const active = () => phase === 'playing' && winner === null;
   const units = () => [...Object.values(players), ...Object.values(robots)];
   const targets = () => [...units(), ...Object.values(towers)];
@@ -212,7 +212,7 @@ function createMatch(solo = false) {
     updateBush(p);
   }
   function reset() {
-    winner = null;
+    winner = null; elapsed = 0;
     for (const id of Object.keys(robots)) delete robots[id];
     for (const id of Object.keys(projectiles)) delete projectiles[id];
     for (const slot of [0, 1]) {
@@ -240,6 +240,16 @@ function createMatch(solo = false) {
     if (b.hp > 0) return;
     b.dead = true;
     b.leap = null; b.air = 0; b.aiming = false; b.pull = null; b.speedBoost = 0;
+    const describe = e => {
+      const character = e.character || players[e.owner]?.character;
+      const kind = e.tower ? 'tower' : isRobot(e) ? 'minion' : 'player';
+      const name = e.tower ? `タワー ${Number(e.id.split('-')[1]) + 1}`
+        : `${characterFor(character)?.name || 'プレイヤー'}${kind === 'minion' ? 'のミニオン' : ''}`;
+      return { id: e.id, slot: e.slot, kind, character, name };
+    };
+    // 撃破は試合内全員へ通知する。ブッシュ内の座標はログに含めない。
+    const kill = { id: ++killSeq, time: r2(elapsed), attacker: describe(a), victim: describe(b) };
+    for (const viewer of Object.values(players)) viewer.socket.emit('kill', kill);
     if (b.tower) {
       // 復活待ちの間にタワーが壊れた場合も、その分だけ延長する。
       for (const p of Object.values(players)) if (p.slot === b.slot && p.dead) p.respawn += CFG.respawnPerTower;
@@ -324,8 +334,11 @@ function createMatch(solo = false) {
     }
     if (contact !== Infinity) {
       if (victim) {
-        stun(victim, CFG.magicStun);
-        victim.pull = { caster: caster.id, remaining: CFG.magicPull };
+        hit(caster, victim, CFG.magicDmg);
+        if (!victim.dead) {
+          stun(victim, CFG.magicStun);
+          victim.pull = { caster: caster.id, remaining: CFG.magicPull };
+        }
         fx(victim, 'magicHit');
       }
       delete projectiles[bolt.id]; return;
@@ -413,6 +426,7 @@ function createMatch(solo = false) {
       const count = Object.values(robots).filter(r => r.owner === p.id).length;
       if (!ready() || p.cCd > 0 || count >= R.max) return;
       p.recall = 0;
+      if (isNum(d?.x, d?.z) && dist(p, d) > 0.01) p.face = ang(p, d);
       p.cCd = p.cfg.cCd;
       for (let i = 0; i < Math.min(R.batch, R.max - count); i++) {
         const a = p.face + (i - 1) * 0.6, id = 'r' + (++robotSeq);
@@ -421,6 +435,7 @@ function createMatch(solo = false) {
         pushOut(r); updateBush(r);
       }
       separateAlexMinions();
+      fx(p, 'summon');
     });
     socket.on('restart', () => { if (solo && (active() || phase === 'finished')) { reset(); phase = 'playing'; } });
     socket.on('disconnect', () => {
@@ -543,6 +558,7 @@ function createMatch(solo = false) {
   }
   function tick() {
     if (active()) {
+      elapsed += DT;
       separateAlexMinions();
       for (const p of Object.values(players)) if (active()) tickPlayer(p);
       for (const r of Object.values(robots)) if (active()) tickRobot(r);

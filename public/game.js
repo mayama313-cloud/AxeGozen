@@ -1,6 +1,7 @@
 const socket = io();
 const $ = id => document.getElementById(id);
 const canvas = $('gameCanvas');
+const ALLY = 0x2f7fb0, ENEMY = 0xb0413a;   // 自分=青 / 相手=赤（どちらのプレイヤーから見ても同じ）
 
 // ---------- シーン / カメラ（LoL風の斜め見下ろし固定） ----------
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -9,9 +10,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x10161a);
 scene.fog = new THREE.Fog(0x10161a, 45, 95);
 const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 200);
-const CAM_OFF = new THREE.Vector3(0, 26, 20);
-camera.position.copy(CAM_OFF);
-camera.lookAt(0, 0, 0);
+const CAM_OFF = new THREE.Vector3(0, 26, 20);   // slot1 は init で (0,26,-20) に反転 → 自分が常に左下
 
 function resize() {
   renderer.setSize(innerWidth, innerHeight, false);
@@ -42,8 +41,8 @@ function add(geo, color, x, y, z, parent = scene, shadow = true) {
 }
 
 // ---------- マップ（サーバーの設定から生成） ----------
-const crystals = [];
-function buildMap({ half, obst, spawns }) {
+const crystals = [], bushes = [];
+function buildMap({ half, obst, spawns, bushes: bushList }, mySlot) {
   const ground = add(new THREE.PlaneGeometry(half * 2, half * 2), 0x2f3b3a, 0, 0, 0, scene, false);
   ground.rotation.x = -Math.PI / 2;
 
@@ -59,7 +58,7 @@ function buildMap({ half, obst, spawns }) {
   strip(10, 0x7a7766, 0.04, 3 * Math.PI / 4);  // レーン（川の上は橋になる）
 
   spawns.forEach((s, i) => {
-    const col = i === 0 ? 0x4fb3d9 : 0xd9574f;
+    const col = i === mySlot ? ALLY : ENEMY;
     const pad = add(new THREE.CylinderGeometry(4, 4, 0.1, 32), col, s.x, 0.05, s.z, scene, false);
     pad.material.transparent = true;
     pad.material.opacity = 0.55;
@@ -82,6 +81,20 @@ function buildMap({ half, obst, spawns }) {
       add(new THREE.CylinderGeometry(0.35, 0.45, o.r * 1.4, 8), 0x5a4030, o.x, o.r * 0.7, o.z);
       add(new THREE.ConeGeometry(o.r, o.r * 3.2, 8), 0x2f6b45, o.x, o.r * 2.2, o.z);
     }
+  });
+
+  // ブッシュ（低い茂み。自分が中にいる間は半透明にして自キャラが隠れないようにする）
+  bushList.forEach((b, i) => {
+    const mats = [];
+    const track = m => { m.material.transparent = true; mats.push(m.material); return m; };
+    track(add(new THREE.CylinderGeometry(b.r, b.r, 0.06, 28), 0x23542f, b.x, 0.03, b.z, scene, false));
+    const n = Math.round(b.r * 4);
+    for (let k = 0; k < n; k++) {
+      const rr = b.r * 0.85 * Math.sqrt((k + 0.5) / n), a = k * 2.39996 + i;   // ひまわり状に敷き詰める
+      const s = 0.55 + ((k * 7 + i * 3) % 5) * 0.1;
+      track(add(new THREE.IcosahedronGeometry(s, 1), k % 2 ? 0x2f8a46 : 0x3a9d52, b.x + Math.cos(a) * rr, s * 0.9, b.z + Math.sin(a) * rr, scene, false));
+    }
+    bushes.push({ ...b, mats, op: 1 });
   });
 }
 
@@ -108,29 +121,79 @@ function makeHuman(color) {
   return { g, mats, legL, legR, armL, armR };
 }
 
-// ---------- ネットワーク状態 ----------
-let myId = null, cfg = null;
-const ents = {};
-const fxs = [];
+// ---------- 小型ロボット（人の半分くらいの背丈。目が前＝+z） ----------
+function makeRobot(color) {
+  const g = new THREE.Group(), mats = [];
+  const B = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const part = (geo, c, x, y, z, parent = g) => {
+    const m = add(geo, c, x, y, z, parent);
+    mats.push(m.material);
+    return m;
+  };
+  const pivot = (x, y) => { const p = new THREE.Group(); p.position.set(x, y, 0); g.add(p); return p; };
 
-function ensure(s) {
-  if (ents[s.id]) return ents[s.id];
-  const h = makeHuman(s.slot === 0 ? 0x2f7fb0 : 0xb0413a);
-  h.g.position.set(s.x, 0, s.z);
-  scene.add(h.g);
-  return (ents[s.id] = Object.assign(h, { x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
+  const legL = pivot(-0.14, 0.35), legR = pivot(0.14, 0.35);
+  const armL = pivot(-0.36, 0.88), armR = pivot(0.36, 0.88);
+  [legL, legR].forEach(l => part(B(0.16, 0.35, 0.18), 0x4a525c, 0, -0.17, 0, l));
+  [armL, armR].forEach(a => part(B(0.12, 0.42, 0.12), 0x9aa4ae, 0, -0.21, 0, a));
+  part(B(0.5, 0.5, 0.36), color, 0, 0.7, 0);                                     // 胴体
+  part(B(0.46, 0.34, 0.36), 0xc9d1d9, 0, 1.12, 0);                               // 頭
+  part(new THREE.CylinderGeometry(0.02, 0.02, 0.22, 6), 0x9aa4ae, 0, 1.4, 0);    // アンテナ
+  part(new THREE.SphereGeometry(0.06, 8, 8), 0xff6a5a, 0, 1.54, 0);
+  const eye = add(B(0.32, 0.08, 0.05), 0xffd36a, 0, 1.14, 0.19, g, false);        // 目（光る。flash対象外）
+  eye.material.emissive.setHex(0xffd36a);
+  return { g, mats, legL, legR, armL, armR };
 }
 
-socket.on('init', d => { myId = d.id; cfg = d.cfg; buildMap(d.map); $('msg').textContent = ''; });
+// ロボットの頭上HPバー（カメラの向きに合わせて常に正面表示）
+function makeBar() {
+  const bar = new THREE.Group();
+  const bg = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.12), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.6, depthTest: false }));
+  const fg = new THREE.Mesh(new THREE.PlaneGeometry(0.86, 0.08).translate(0.43, 0, 0), new THREE.MeshBasicMaterial({ color: 0x8be0a0, depthTest: false }));
+  fg.position.set(-0.43, 0, 0.001);
+  bg.renderOrder = 10; fg.renderOrder = 11;
+  bar.add(bg, fg);
+  scene.add(bar);
+  bar.fill = fg;
+  return bar;
+}
+
+// ---------- ネットワーク状態 ----------
+let myId = null, mySlot = 0, cfg = null;
+const ents = {};    // 見えているプレイヤー / ロボット（id → 表示用データ）
+const fxs = [];
+
+function ensure(s, kind) {
+  if (ents[s.id]) return ents[s.id];
+  const color = s.slot === mySlot ? ALLY : ENEMY;
+  const h = kind === 'robot' ? makeRobot(color) : makeHuman(color);
+  h.g.position.set(s.x, 0, s.z);
+  scene.add(h.g);
+  return (ents[s.id] = Object.assign(h, { kind, bar: kind === 'robot' ? makeBar() : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
+}
+
+socket.on('init', d => {
+  myId = d.id; mySlot = d.slot; cfg = d.cfg;
+  if (mySlot === 1) CAM_OFF.set(0, 26, -20);          // 相手側スポーンの人は視点を180°回転 → 自分は左下・青
+  const sp = d.map.spawns[mySlot];
+  camera.position.set(sp.x + CAM_OFF.x, CAM_OFF.y, sp.z + CAM_OFF.z);
+  camera.lookAt(sp.x, 0, sp.z);
+  buildMap(d.map, mySlot);
+  $('msg').textContent = '';
+});
 socket.on('full', () => { $('msg').textContent = '満員です（2人まで）'; });
 
-socket.on('state', list => {
-  const ids = new Set(list.map(s => s.id));
-  list.forEach(s => { ensure(s).s = s; });
+socket.on('state', st => {
+  const seen = new Set();
+  st.players.forEach(s => { if (s.vis) { seen.add(s.id); ensure(s, 'human').s = s; } });   // ブッシュ内の敵は vis=false で座標なし
+  st.robots.forEach(s => { seen.add(s.id); ensure(s, 'robot').s = s; });
   Object.keys(ents).forEach(id => {
-    if (!ids.has(id)) { scene.remove(ents[id].g); delete ents[id]; }
+    if (seen.has(id)) return;
+    scene.remove(ents[id].g);
+    if (ents[id].bar) scene.remove(ents[id].bar);
+    delete ents[id];
   });
-  hud(list);
+  hud(st.players);
 });
 
 socket.on('fx', d => {
@@ -154,6 +217,7 @@ function hud(list) {
   $('enemyHpFill').style.width = f ? `${Math.max(0, f.hp / cfg.maxHp) * 100}%` : '0%';
   $('qCooldown').style.height = `${(m.qCd / cfg.qCd) * 100}%`;
   $('eCooldown').style.height = `${(m.eCd / cfg.eCd) * 100}%`;
+  $('cCooldown').style.height = `${(m.cCd / cfg.cCd) * 100}%`;
   $('score').textContent = `${m.kills} - ${f ? f.kills : 0}`;
   $('msg').textContent = !f ? '対戦相手を待っています…' : m.dead ? 'リスポーン中…' : '';
 }
@@ -181,7 +245,7 @@ function marker(p) {
 }
 
 function dmgText(e, n) {
-  const v = new THREE.Vector3(e.x, 2.8, e.z).project(camera);
+  const v = new THREE.Vector3(e.x, e.kind === 'robot' ? 1.9 : 2.8, e.z).project(camera);
   const d = document.createElement('div');
   d.className = 'dmg';
   d.textContent = n;
@@ -191,7 +255,7 @@ function dmgText(e, n) {
   setTimeout(() => d.remove(), 700);
 }
 
-// ---------- 入力（LoL方式: 右クリック移動 / Q・E スキル） ----------
+// ---------- 入力（LoL方式: 右クリック移動 / Q・E・C スキル） ----------
 const ray = new THREE.Raycaster();
 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const pt = new THREE.Vector3(), ndc = new THREE.Vector2();
@@ -209,17 +273,20 @@ canvas.addEventListener('mousemove', ev => { mouse = ev; });
 canvas.addEventListener('mousedown', ev => {
   if (ev.button !== 2 || !myId) return;
   const g = groundAt(ev);
-  const foe = Object.values(ents).find(e => e.s.id !== myId && !e.s.dead && Math.hypot(e.x - g.x, e.z - g.z) < 1.6);
-  if (foe) socket.emit('chase');
+  let foe = null, best = 1.6;                       // カーソルに最も近い、見えている敵（プレイヤー or ロボット）
+  for (const e of Object.values(ents)) {
+    if (e.s.slot === mySlot || e.s.dead) continue;
+    const d = Math.hypot(e.x - g.x, e.z - g.z);
+    if (d < best) { best = d; foe = e; }
+  }
+  if (foe) socket.emit('chase', { id: foe.s.id });
   else { socket.emit('move', g); marker(g); }
 });
 addEventListener('keydown', ev => {
   if (ev.repeat || !myId) return;
   const k = ev.key.toLowerCase();
-  if (k === 'q' || k === 'e') {
-    const g = groundAt(mouse);
-    socket.emit(k === 'q' ? 'q' : 'dash', g);
-  }
+  if (k === 'q' || k === 'e') socket.emit(k === 'q' ? 'q' : 'dash', groundAt(mouse));
+  else if (k === 'c') socket.emit('c');
 });
 
 // ---------- 描画ループ ----------
@@ -247,6 +314,12 @@ function frame() {
     e.armL.rotation.x = -w * 0.8;
     e.armR.rotation.x = e.swing > 0 ? -2.6 + 3 * (1 - e.swing / 0.25) : w * 0.8; // 振り下ろし
     e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : 0x000000));
+
+    if (e.bar) {
+      e.bar.position.set(e.x, 1.85, e.z);
+      e.bar.quaternion.copy(camera.quaternion);
+      e.bar.fill.scale.x = Math.max(0.001, s.hp / cfg.robot.hp);
+    }
   }
 
   const me = ents[myId];
@@ -255,6 +328,13 @@ function frame() {
     camera.position.lerp(target, 1 - Math.exp(-dt * 6));
     camera.lookAt(camera.position.x - CAM_OFF.x, 0, camera.position.z - CAM_OFF.z);
   }
+
+  // 自分がいるブッシュだけ半透明に
+  const inside = me && bushes.find(b => Math.hypot(me.x - b.x, me.z - b.z) < b.r);
+  bushes.forEach(b => {
+    b.op += ((b === inside ? 0.35 : 1) - b.op) * (1 - Math.exp(-dt * 10));
+    b.mats.forEach(m => { m.opacity = b.op; });
+  });
 
   crystals.forEach(c => { c.rotation.y = t; });
   for (let i = fxs.length - 1; i >= 0; i--) {

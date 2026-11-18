@@ -2,11 +2,12 @@ const HALF = 30, TICK = 30, DT = 1 / TICK;
 const CFG = {
   maxHp: 200, speed: 9, radius: 0.7,
   atkRange: 2.4, atkCd: 0.8, atkDmg: 10,
-  qRange: 4, qArc: Math.PI / 3, qCd: 5, qDmg: 28,
+  qRange: 4, qArc: Math.PI / 3, qCd: 5, qDmg: 28, qStun: 0.3,
   dashSpeed: 40, dashTime: 0.18, eCd: 3, cCd: 8,
-  robot: { hp: 40, dmg: 5, atkCd: 0.7, atkRange: 1.8, speed: 7, radius: 0.4, aggro: 9, leash: 14, life: 20, max: 3 },
+  robot: { hp: 40, dmg: 5, atkCd: 0.7, atkRange: 1.8, speed: 7, radius: 0.4, aggro: 9, leash: 14, life: 20, max: 5, batch: 3 },
   safeRadius: 4, safeHeal: 80,
-  tower: { hp: 300, radius: 1.1, count: 5, range: 7, dmg: 15, atkCd: 1 },
+  tower: { hp: 300, radius: 1.1, count: 5, range: 7, dmg: 5, atkCd: 1 },
+  recallTime: 5, inputTimeout: 0.35,
   respawn: 5, respawnPerTower: 5,
 };
 const R = CFG.robot;
@@ -23,6 +24,7 @@ const ang = (a, b) => Math.atan2(b.x - a.x, b.z - a.z);
 const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const isNum = (...v) => v.every(Number.isFinite);
 const r2 = n => Math.round(n * 100) / 100;
+const decay = time => time <= DT + 1e-9 ? 0 : time - DT;
 const isRobot = e => e.owner !== undefined;
 const protectedUnit = e => !e.tower && dist(e, SPAWNS[e.slot]) <= CFG.safeRadius;
 
@@ -63,7 +65,7 @@ function createMatch(solo = false) {
     e.x = clamp(e.x); e.z = clamp(e.z);
   }
   function spawn(p) {
-    Object.assign(p, SPAWNS[p.slot], { hp: CFG.maxHp, dest: null, target: null, dead: false, dashT: 0, moving: false, respawn: 0 });
+    Object.assign(p, SPAWNS[p.slot], { hp: CFG.maxHp, dest: null, target: null, dead: false, dashT: 0, moving: false, respawn: 0, stun: 0, recall: 0, keys: null, inputT: 0 });
     p.face = ang(p, { x: 0, z: 0 });
     updateBush(p);
   }
@@ -88,6 +90,7 @@ function createMatch(solo = false) {
   function hit(a, b, dmg) {
     if (!active() || !attackable(a, b)) return;
     b.hp = Math.max(0, b.hp - dmg);
+    b.recall = 0;
     emitSee(b, 'hit', { id: b.id, dmg });
     if (b.hp > 0) return;
     b.dead = true;
@@ -107,7 +110,14 @@ function createMatch(solo = false) {
     fx(p, kind);
     for (const o of targets()) {
       if (!attackable(p, o) || dist(p, o) > range + o.radius) continue;
-      if (Math.abs(wrap(ang(p, o) - p.face)) <= halfArc) hit(p, o, dmg);
+      if (Math.abs(wrap(ang(p, o) - p.face)) <= halfArc) {
+        const before = o.hp;
+        hit(p, o, dmg);
+        if (o.hp < before && kind === 'q' && !o.tower && !o.dead) {
+          o.stun = CFG.qStun;
+          o.dest = null; o.target = null; o.dashT = 0; o.keys = null; o.recall = 0; o.moving = false;
+        }
+      }
     }
   }
   function connect(socket) {
@@ -117,32 +127,54 @@ function createMatch(solo = false) {
     spawn(p);
     if (active()) reset();
     socket.emit('init', { id: p.id, slot, cfg: CFG, map: MAP, solo });
-    const ready = () => active() && !p.dead;
+    const ready = () => active() && !p.dead && p.stun <= 0;
+    socket.on('steer', d => {
+      if (!isNum(d?.x, d?.z) || Math.abs(d.x) > 1 || Math.abs(d.z) > 1) return;
+      if (d.x === 0 && d.z === 0) { p.keys = null; return; }
+      if (!ready()) return;
+      const length = Math.hypot(d.x, d.z);
+      p.keys = { x: d.x / length, z: d.z / length }; p.inputT = CFG.inputTimeout;
+      p.dest = null; p.recall = 0;
+    });
+    socket.on('recall', () => {
+      if (!ready()) return;
+      if (p.recall > 0) { p.recall = 0; return; }
+      p.recall = CFG.recallTime;
+      p.dest = null; p.target = null; p.keys = null; p.dashT = 0; p.moving = false;
+    });
     socket.on('move', d => {
       if (!ready() || !isNum(d?.x, d?.z)) return;
+      p.recall = 0; p.keys = null;
       p.dest = { x: clamp(d.x), z: clamp(d.z) }; p.target = null;
     });
     socket.on('chase', d => {
       const t = typeof d?.id === 'string' ? unit(d.id) : null;
       if (!ready() || !attackable(p, t)) return;
+      p.recall = 0;
       p.target = t.id; p.dest = null;
     });
     socket.on('q', d => {
       if (!ready() || p.qCd > 0 || p.dashT > 0 || !isNum(d?.x, d?.z)) return;
+      p.recall = 0;
       p.qCd = CFG.qCd; p.face = ang(p, d); p.dest = null;
       melee(p, CFG.qRange, CFG.qArc, CFG.qDmg, 'q');
     });
     socket.on('dash', d => {
       if (!ready() || p.eCd > 0 || !isNum(d?.x, d?.z)) return;
+      p.recall = 0;
       p.eCd = CFG.eCd; p.face = ang(p, d); p.dashT = CFG.dashTime; p.dest = null;
     });
     socket.on('c', () => {
-      if (!ready() || p.cCd > 0 || Object.values(robots).filter(r => r.owner === p.id).length >= R.max) return;
+      const count = Object.values(robots).filter(r => r.owner === p.id).length;
+      if (!ready() || p.cCd > 0 || count >= R.max) return;
+      p.recall = 0;
       p.cCd = CFG.cCd;
-      const a = p.face + (Math.random() - 0.5), id = 'r' + (++robotSeq);
-      const r = robots[id] = { id, owner: p.id, slot, radius: R.radius, hp: R.hp, life: R.life, dead: false,
-        x: clamp(p.x + Math.sin(a) * 1.6), z: clamp(p.z + Math.cos(a) * 1.6), face: p.face, atkCd: 0, target: null, moving: false };
-      pushOut(r); updateBush(r);
+      for (let i = 0; i < Math.min(R.batch, R.max - count); i++) {
+        const a = p.face + (i - 1) * 0.6, id = 'r' + (++robotSeq);
+        const r = robots[id] = { id, owner: p.id, slot, radius: R.radius, hp: R.hp, life: R.life, dead: false, stun: 0,
+          x: clamp(p.x + Math.sin(a) * 1.6), z: clamp(p.z + Math.cos(a) * 1.6), face: p.face, atkCd: 0, target: null, moving: false };
+        pushOut(r); updateBush(r);
+      }
     });
     socket.on('restart', () => { if (solo) reset(); });
     socket.on('disconnect', () => { delete players[p.id]; reset(); });
@@ -153,6 +185,7 @@ function createMatch(solo = false) {
     r.life -= DT; r.atkCd = Math.max(0, r.atkCd - DT);
     const owner = players[r.owner];
     if (r.life <= 0 || !owner) { delete robots[r.id]; return; }
+    if (r.stun > 0) { r.stun = decay(r.stun); r.moving = false; return; }
     const ok = e => attackable(r, e) && dist(r, e) <= R.leash;
     let foe = unit(r.target);
     if (!ok(foe)) {
@@ -186,6 +219,18 @@ function createMatch(solo = false) {
     for (const cd of ['atkCd', 'qCd', 'eCd', 'cCd']) p[cd] = Math.max(0, p[cd] - DT);
     if (p.dead) { p.respawn -= DT; if (p.respawn <= 0) spawn(p); return; }
     p.moving = false;
+    p.inputT = Math.max(0, p.inputT - DT);
+    if (p.inputT <= 0) p.keys = null;
+    if (p.stun > 0) { p.stun = decay(p.stun); return; }
+    if (p.recall > 0) {
+      p.recall = Math.max(0, p.recall - DT);
+      if (p.recall < 1e-9) {
+        const hp = p.hp;
+        spawn(p); p.hp = hp;
+      }
+      if (protectedUnit(p)) p.hp = Math.min(CFG.maxHp, p.hp + CFG.safeHeal * DT);
+      return;
+    }
     let dir = null, step = 0, foe = p.target && unit(p.target);
     if (!attackable(p, foe)) { foe = null; p.target = null; }
     if (p.dashT > 0) {
@@ -197,7 +242,11 @@ function createMatch(solo = false) {
         if (dist(p, foe) <= reach(CFG.atkRange, foe)) {
           goal = null; p.face = ang(p, foe);
           if (p.atkCd <= 0) { p.atkCd = CFG.atkCd; fx(p, 'atk'); hit(p, foe, CFG.atkDmg); }
-        } else goal = foe;
+        } else if (!p.keys) goal = foe;
+      }
+      if (p.keys) {
+        dir = p.keys; step = CFG.speed * DT; p.moving = true;
+        if (!foe || dist(p, foe) > reach(CFG.atkRange, foe)) p.face = Math.atan2(dir.x, dir.z);
       }
       if (goal) {
         const d = dist(p, goal);
@@ -236,12 +285,12 @@ function createMatch(solo = false) {
         towers: Object.values(towers).map(t => ({ id: t.id, slot: t.slot, x: r2(t.x), z: r2(t.z), hp: t.hp, dead: t.dead, face: t.face })),
         players: list.map(p => {
           const vis = canSee(v.slot, p);
-          const s = { id: p.id, slot: p.slot, hp: r2(p.hp), dead: p.dead, kills: p.kills, vis };
+          const s = { id: p.id, slot: p.slot, hp: r2(p.hp), dead: p.dead, kills: p.kills, vis, stun: r2(p.stun), recall: r2(p.recall) };
           if (vis) Object.assign(s, { x: r2(p.x), z: r2(p.z), face: r2(p.face), moving: active() && p.moving });
           if (p === v) Object.assign(s, { qCd: r2(p.qCd), eCd: r2(p.eCd), cCd: r2(p.cCd), respawn: r2(Math.max(0, p.respawn)), safe: !p.dead && protectedUnit(p), respawnTime: CFG.respawn + destroyed(p.slot) * CFG.respawnPerTower });
           return s;
         }),
-        robots: Object.values(robots).filter(r => canSee(v.slot, r)).map(r => ({ id: r.id, slot: r.slot, x: r2(r.x), z: r2(r.z), face: r2(r.face), hp: r.hp, moving: active() && r.moving })),
+        robots: Object.values(robots).filter(r => canSee(v.slot, r)).map(r => ({ id: r.id, slot: r.slot, x: r2(r.x), z: r2(r.z), face: r2(r.face), hp: r.hp, stun: r2(r.stun || 0), moving: active() && r.moving })),
       });
     }
   }

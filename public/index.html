@@ -41,11 +41,12 @@
 </nav>
 <div id="msg">接続中…</div>
 <div id="skills">
-  <div class="sk">Q<small>範囲斬り</small><b id="qCooldown"></b></div>
+  <div class="sk" title="範囲斬り・命中で0.3秒スタン">Q<small>斬り・スタン</small><b id="qCooldown"></b></div>
   <div class="sk">E<small>ダッシュ</small><b id="eCooldown"></b></div>
-  <div class="sk">C<small>ロボ</small><b id="cCooldown"></b></div>
+  <div class="sk" title="3体召喚・最大5体">C<small>3体召喚</small><b id="cCooldown"></b></div>
+  <div class="sk" title="5秒間で自陣に帰還。移動・攻撃・被ダメージで中断">B<small>リコール</small><b id="recallProgress"></b></div>
 </div>
-<div id="help">右クリック: 移動・敵やタワーを攻撃 / Q: 範囲斬り / E: ダッシュ / C: ロボット召喚（タワーも攻撃）<br>敵タワー5本を全て破壊すると勝利。安全地帯では無敵・毎秒80HP回復。復活は5秒＋自陣の破壊済みタワー数×5秒。</div>
+<div id="help">WASD: 移動 / 右クリック: 移動・敵やタワーを攻撃 / Q: 範囲斬り＋0.3秒スタン / E: ダッシュ / C: 3体召喚（最大5体） / B: 5秒リコール（移動・攻撃・被ダメージで中断、Bでキャンセル）<br>敵タワー5本を全て破壊すると勝利。安全地帯では無敵・毎秒80HP回復。復活は5秒＋自陣の破壊済みタワー数×5秒。</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 <script src="game.js"></script>

@@ -203,6 +203,7 @@ function ensure(s, kind) {
 }
 
 socket.on('init', d => {
+  clearKeys();
   [...mapRoot.children].forEach(disposeObject);
   crystals.length = 0; bushes.length = 0;
   for (const id of Object.keys(ents)) {
@@ -259,6 +260,7 @@ function hud(st) {
   $('qCooldown').style.height = `${(m.qCd / cfg.qCd) * 100}%`;
   $('eCooldown').style.height = `${(m.eCd / cfg.eCd) * 100}%`;
   $('cCooldown').style.height = `${(m.cCd / cfg.cCd) * 100}%`;
+  $('recallProgress').style.height = `${m.recall > 0 ? (1 - m.recall / cfg.recallTime) * 100 : 0}%`;
   $('score').textContent = `${m.kills} - ${f ? f.kills : 0}`;
   const own = st.towers.filter(t => t.slot === mySlot && !t.dead).length;
   const enemy = st.towers.filter(t => t.slot !== mySlot && !t.dead).length;
@@ -266,12 +268,14 @@ function hud(st) {
   $('status').textContent = `${st.solo ? '1人用テスト' : 'オンライン対戦'}｜復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}`;
   $('msg').textContent = st.phase === 'finished' ? (st.winner === mySlot ? '勝利！ 敵タワーを全て破壊しました' : '敗北 — 自陣タワーが全て破壊されました')
     : st.phase === 'waiting' ? '対戦相手を待っています…（1人用テストも選べます）'
-    : m.dead ? `リスポーンまで ${Math.ceil(m.respawn)}秒` : '';
+    : m.dead ? `リスポーンまで ${Math.ceil(m.respawn)}秒`
+    : m.stun > 0 ? 'スタン中'
+    : m.recall > 0 ? `リコール中… ${m.recall.toFixed(1)}秒（移動・攻撃・被ダメージで中断）` : '';
 }
 
 $('restart').hidden = !soloMode;
 $('restart').addEventListener('click', () => socket.emit('restart'));
-socket.on('disconnect', reason => { phase = 'waiting'; if (reason !== 'io server disconnect') $('msg').textContent = '接続が切れました。再接続中…'; });
+socket.on('disconnect', reason => { phase = 'waiting'; clearKeys(); if (reason !== 'io server disconnect') $('msg').textContent = '接続が切れました。再接続中…'; });
 socket.on('connect_error', () => { $('msg').textContent = '接続できません。サーバーを確認してください'; });
 
 // ---------- エフェクト ----------
@@ -307,11 +311,28 @@ function dmgText(e, n) {
   setTimeout(() => d.remove(), 700);
 }
 
-// ---------- 入力（LoL方式: 右クリック移動 / Q・E・C スキル） ----------
+// ---------- 入力（WASD / 右クリック移動 / Q・E・C・B） ----------
 const ray = new THREE.Raycaster();
 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const pt = new THREE.Vector3(), ndc = new THREE.Vector2();
 let mouse = { clientX: 0, clientY: 0 }, aim = { x: 0, z: 0 };
+const heldKeys = new Set();
+let lastSteer = 0;
+function sendKeys() {
+  const sign = mySlot === 1 ? -1 : 1;
+  socket.emit('steer', { x: (Number(heldKeys.has('d')) - Number(heldKeys.has('a'))) * sign,
+    z: (Number(heldKeys.has('s')) - Number(heldKeys.has('w'))) * sign });
+  lastSteer = performance.now();
+}
+function clearKeys() {
+  heldKeys.clear();
+  if (myId && socket.connected) sendKeys();
+}
+addEventListener('blur', clearKeys);
+document.addEventListener('visibilitychange', () => { if (document.hidden) clearKeys(); });
+addEventListener('keyup', ev => {
+  if (heldKeys.delete(ev.key.toLowerCase())) sendKeys();
+});
 
 function groundAt(ev) {
   ndc.set((ev.clientX / innerWidth) * 2 - 1, -(ev.clientY / innerHeight) * 2 + 1);
@@ -341,10 +362,13 @@ canvas.addEventListener('mousedown', ev => {
   else { socket.emit('move', g); marker(g); }
 });
 addEventListener('keydown', ev => {
-  if (ev.repeat || !myId || phase !== 'playing' || ev.target.closest('button, a')) return;
+  if (ev.repeat || !myId || phase !== 'playing' || ev.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
   const k = ev.key.toLowerCase();
-  if (k === 'q' || k === 'e') socket.emit(k === 'q' ? 'q' : 'dash', groundAt(mouse));
+  if ('wasd'.includes(k) && k.length === 1) {
+    ev.preventDefault(); heldKeys.add(k); sendKeys();
+  } else if (k === 'q' || k === 'e') socket.emit(k === 'q' ? 'q' : 'dash', groundAt(mouse));
   else if (k === 'c') socket.emit('c');
+  else if (k === 'b') { clearKeys(); socket.emit('recall'); }
 });
 
 // ---------- 描画ループ ----------
@@ -352,6 +376,7 @@ const clock = new THREE.Clock();
 function frame() {
   const dt = Math.min(clock.getDelta(), 0.1), t = clock.elapsedTime;
   const k = 1 - Math.exp(-dt * 20);
+  if (phase === 'playing' && heldKeys.size && performance.now() - lastSteer >= 100) sendKeys();
 
   for (const e of Object.values(ents)) {
     const s = e.s;
@@ -381,7 +406,7 @@ function frame() {
     e.legR.rotation.x = -w;
     e.armL.rotation.x = -w * 0.8;
     e.armR.rotation.x = e.swing > 0 ? -2.6 + 3 * (1 - e.swing / 0.25) : w * 0.8; // 振り下ろし
-    e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : 0x000000));
+    e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : s.stun > 0 ? 0x776600 : 0x000000));
 
     if (e.bar) {
       e.bar.position.set(e.x, 1.85, e.z);

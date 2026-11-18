@@ -75,7 +75,7 @@ test('summoned C unit acquires and damages an enemy tower without a player targe
   const t = towers['t1-2'];
   place(p, t.x - 4, t.z + 4); p.face = Math.atan2(t.x - p.x, t.z - p.z);
   a.send('c');
-  assert.equal(Object.keys(robots).length, 1);
+  assert.equal(Object.keys(robots).length, 3);
   ticks(match, TICK * 2);
   assert.ok(t.hp < CFG.tower.hp);
   assert.equal(Object.values(robots)[0].target, t.id);
@@ -171,4 +171,99 @@ test('central crossroads are free of bushes, and invalid input is ignored', () =
   const { match, a, p } = setup(true);
   a.send('move', { x: NaN, z: 0 }); a.send('q', { x: Infinity, z: 0 }); a.send('dash', null);
   match.tick(); assert.deepEqual(aim(p), MAP.spawns[0]); assert.equal(p.qCd, 0); assert.equal(p.eCd, 0);
+});
+
+test('keyboard movement normalizes diagonals, stops on release and times out without fresh input', () => {
+  const { match, a, p } = setup(true);
+  place(p, 0, 0);
+  a.send('steer', { x: 1, z: 1 }); match.tick();
+  assert.ok(Math.abs(Math.hypot(p.x, p.z) - CFG.speed / TICK) < 1e-9);
+  a.send('steer', { x: 0, z: 0 });
+  const stopped = aim(p); ticks(match, 5); assert.deepEqual(aim(p), stopped);
+  a.send('steer', { x: 1, z: 0 }); ticks(match, TICK);
+  const expired = aim(p); match.tick(); assert.deepEqual(aim(p), expired);
+  a.send('steer', { x: Infinity, z: 0 });
+  a.send('steer', { x: 2, z: 0 }); match.tick(); assert.deepEqual(aim(p), expired);
+});
+
+test('keyboard movement preserves in-range automatic attacks and cannot enter enemy safe zones', () => {
+  const { match, a, p, q } = setup();
+  place(p, 0, 0); place(q, 1, 0);
+  a.send('chase', { id: q.id }); a.send('steer', { x: 0, z: 1 }); match.tick();
+  assert.ok(p.z > 0); assert.equal(q.hp, CFG.maxHp - CFG.atkDmg);
+  for (const slot of [0, 1]) {
+    const victim = match.state.players[slot ? 'b' : 'a'], s = MAP.spawns[1 - slot];
+    const sock = slot ? q.socket : a;
+    place(victim, s.x, s.z + (slot ? -5 : 5));
+    for (let i = 0; i < 20; i++) { sock.send('steer', { x: 0, z: slot ? 1 : -1 }); match.tick(); }
+    assert.ok(Math.hypot(victim.x - s.x, victim.z - s.z) >= CFG.safeRadius + victim.radius);
+  }
+});
+
+test('B recalls each player after exactly five seconds, preserving HP and skill cooldowns', () => {
+  for (const slot of [0, 1]) {
+    const { match, a, b, p, q } = setup();
+    const e = slot ? q : p, sock = slot ? b : a;
+    place(e, 0, 0); e.hp = 40; e.cCd = 8;
+    sock.send('recall'); ticks(match, TICK * 5 - 1);
+    assert.deepEqual(aim(e), { x: 0, z: 0 }); assert.ok(e.recall > 0);
+    match.tick();
+    assert.deepEqual(aim(e), MAP.spawns[slot]); assert.equal(e.recall, 0);
+    assert.ok(e.hp < CFG.maxHp); assert.ok(e.cCd > 2.9);
+  }
+});
+
+test('recall cancels on movement, attacks, skills, damage and another B press', () => {
+  for (const event of ['move', 'steer', 'chase', 'q', 'dash', 'c', 'recall', 'damage']) {
+    const { match, a, b, p, q } = setup();
+    place(p, 0, 0); place(q, 1, 0);
+    a.send('recall'); ticks(match, 3); assert.ok(p.recall > 0);
+    if (event === 'damage') { b.send('chase', { id: p.id }); match.tick(); }
+    else a.send(event, event === 'chase' ? { id: q.id } : { x: 1, z: 0 });
+    assert.equal(p.recall, 0, event);
+  }
+});
+
+test('C summons three at once, fills only remaining capacity and caps each owner at five', () => {
+  const { a, b, p, q, robots } = setup();
+  a.send('c'); assert.equal(Object.keys(robots).length, 3);
+  a.send('c'); assert.equal(Object.keys(robots).length, 3);
+  p.cCd = 0; a.send('c'); assert.equal(Object.keys(robots).length, 5);
+  p.cCd = 0; a.send('c'); assert.equal(Object.keys(robots).length, 5); assert.equal(p.cCd, 0);
+  b.send('c'); assert.equal(Object.values(robots).filter(r => r.owner === q.id).length, 3);
+  delete robots[Object.values(robots).find(r => r.owner === p.id).id];
+  a.send('c'); assert.equal(Object.values(robots).filter(r => r.owner === p.id).length, 5);
+});
+
+test('Q stuns for 0.3 seconds, interrupts dash and recall, and blocks all actions until recovery', () => {
+  const { match, a, b, p, q, robots } = setup();
+  place(p, 0, 0); place(q, 1, 0);
+  q.dashT = 0.1; q.recall = 3; q.keys = { x: 1, z: 0 }; q.inputT = 1;
+  a.send('q', aim(q));
+  assert.equal(q.hp, CFG.maxHp - CFG.qDmg); assert.equal(q.stun, 0.3);
+  assert.equal(q.dashT, 0); assert.equal(q.recall, 0); assert.equal(q.keys, null);
+  for (const event of ['move', 'steer', 'chase', 'q', 'dash', 'c', 'recall']) {
+    b.send(event, event === 'chase' ? { id: p.id } : { x: 1, z: 0 });
+  }
+  assert.equal(q.dest, null); assert.equal(q.target, null); assert.equal(q.qCd, 0);
+  assert.equal(q.eCd, 0); assert.equal(q.cCd, 0); assert.equal(q.recall, 0);
+  assert.equal(Object.keys(robots).length, 0);
+  const pos = aim(q); ticks(match, 8); assert.deepEqual(aim(q), pos); assert.ok(q.stun > 0);
+  match.tick(); assert.equal(q.stun, 0); assert.deepEqual(aim(q), pos);
+  b.send('steer', { x: 1, z: 0 }); match.tick(); assert.ok(q.x > pos.x);
+});
+
+test('Q stuns robots but not towers, missed enemies or enemies inside their safe zone', () => {
+  const { match, a, b, p, q, robots, towers } = setup();
+  place(p, 0, 0); place(q, 1, 0); b.send('c');
+  const r = Object.values(robots)[0]; place(r, 1, 0); r.target = p.id;
+  place(q, -6, 0);
+  a.send('q', aim(r));
+  assert.equal(r.stun, 0.3); assert.equal(q.stun, 0);
+  const pos = aim(r); ticks(match, 9); assert.deepEqual(aim(r), pos); assert.equal(r.stun, 0);
+  const t = towers['t1-2']; place(p, t.x - 3, t.z); p.qCd = 0;
+  a.send('q', aim(t)); assert.equal(t.stun, undefined); assert.ok(t.hp < CFG.tower.hp);
+  place(q, MAP.spawns[1].x, MAP.spawns[1].z);
+  place(p, q.x - 4.8, q.z); p.qCd = 0; a.send('q', aim(q));
+  assert.equal(q.stun, 0); assert.equal(q.hp, CFG.maxHp);
 });

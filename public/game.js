@@ -193,10 +193,19 @@ function makeBar() {
   bar.fill = fg;
   return bar;
 }
+function makeProjectile() {
+  const g = new THREE.Group(), mats = [];
+  for (const [geo, z] of [[new THREE.IcosahedronGeometry(0.32, 1), 0], [new THREE.BoxGeometry(0.16, 0.16, 1.4), -0.8]]) {
+    const mesh = add(geo, 0x76ffff, 0, 0.8, z, g, false);
+    mesh.material.emissive.setHex(0x42cccc); mats.push(mesh.material);
+  }
+  return { g, mats };
+}
 
 // ---------- ネットワーク状態 ----------
 let myId = null, mySlot = 0, cfg = null;
 let phase = 'waiting';
+let leapAiming = false, mapData = null;
 const ents = {};    // 見えているプレイヤー / ロボット（id → 表示用データ）
 const fxs = [];
 
@@ -208,10 +217,10 @@ function ensure(s, kind) {
   }
   if (ents[s.id]) return ents[s.id];
   const color = s.slot === mySlot ? ALLY : ENEMY;
-  const h = kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : makeHuman(color, s.character);
+  const h = kind === 'projectile' ? makeProjectile() : kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : makeHuman(color, s.character);
   h.g.position.set(s.x, 0, s.z);
   scene.add(h.g);
-  return (ents[s.id] = Object.assign(h, { kind, bar: kind !== 'human' ? makeBar() : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
+  return (ents[s.id] = Object.assign(h, { kind, bar: kind === 'robot' || kind === 'tower' ? makeBar() : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
 }
 
 socket.on('init', d => {
@@ -224,6 +233,7 @@ socket.on('init', d => {
     delete ents[id];
   }
   myId = d.id; mySlot = d.slot; cfg = d.cfg;
+  mapData = d.map; leapAiming = false;
   CAM_OFF.set(0, 26, mySlot === 1 ? -20 : 20);
   const sp = d.map.spawns[mySlot];
   camera.position.set(sp.x + CAM_OFF.x, CAM_OFF.y, sp.z + CAM_OFF.z);
@@ -237,10 +247,13 @@ socket.on('state', st => {
   phase = st.phase;
   const self = st.players.find(p => p.id === myId);
   if (self?.character) cfg = ArenaWorld.configFor(self.character);
+  leapAiming = !!self?.aiming && phase === 'playing' && !self.dead && self.stun <= 0;
+  canvas.style.cursor = leapAiming ? 'crosshair' : '';
   const seen = new Set();
   st.players.forEach(s => { if (s.vis) { seen.add(s.id); ensure(s, 'human').s = s; } });   // ブッシュ内の敵は vis=false で座標なし
   st.robots.forEach(s => { seen.add(s.id); ensure(s, 'robot').s = s; });
   st.towers.forEach(s => { seen.add(s.id); ensure(s, 'tower').s = s; });
+  st.projectiles.forEach(s => { seen.add(s.id); ensure(s, 'projectile').s = s; });
   Object.keys(ents).forEach(id => {
     if (seen.has(id)) return;
     disposeObject(ents[id].g);
@@ -255,11 +268,13 @@ socket.on('fx', d => {
   if (!e) return;
   e.swing = 0.25;
   e.attackBoost = !!d.boosted;
-  const color = d.boosted ? 0xff3535 : d.kind === 'shield' ? 0x72bbff : 0xe6c15a;
+  const color = d.boosted ? 0xff3535 : ['magic', 'magicHit', 'wind'].includes(d.kind) ? 0x76ffff : d.kind === 'shield' ? 0x72bbff : 0xe6c15a;
   if (e.kind === 'tower') arc(d.x, d.z, d.face, cfg.tower.range, 0.06, color);
   else if (d.kind === 'q') arc(d.x, d.z, d.face, d.range, d.halfArc, color);
   else if (d.kind === 'atk') arc(d.x, d.z, d.face, e.kind === 'robot' ? 1.8 : 2.4, 0.55, color);
   else if (d.kind === 'shield') arc(d.x, d.z, d.face, 2, Math.PI, color);
+  else if (d.kind === 'leapHit') arc(d.x, d.z, d.face, d.range, Math.PI, color);
+  else if (['magicHit', 'wind'].includes(d.kind)) arc(d.x, d.z, d.face, 1.5, Math.PI, color);
 });
 
 socket.on('hit', d => {
@@ -288,17 +303,18 @@ function hud(st) {
   const own = st.towers.filter(t => t.slot === mySlot && !t.dead).length;
   const enemy = st.towers.filter(t => t.slot !== mySlot && !t.dead).length;
   $('objective').textContent = `タワー残り　自陣 ${own}/5　敵陣 ${enemy}/5`;
-  $('status').textContent = `${st.solo ? 'オフライン' : 'オンライン対戦'}｜${character?.name || ''}｜復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}${m.shield > 0 ? '｜ダメージ50%軽減中' : ''}`;
+  $('status').textContent = `${st.solo ? 'オフライン' : 'オンライン対戦'}｜${character?.name || ''}｜復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}${m.shield > 0 ? '｜ダメージ50%軽減中' : ''}${m.speedBoost > 0 ? `｜移動速度2倍 ${m.speedBoost.toFixed(1)}秒` : ''}`;
   $('status').title = character?.passive || '';
   $('msg').textContent = st.phase === 'finished' ? (st.winner === mySlot ? '勝利！ 敵タワーを全て破壊しました' : '敗北 — 自陣タワーが全て破壊されました')
     : st.phase === 'waiting' ? '対戦相手を待っています…（1人用テストも選べます）'
     : m.dead ? `リスポーンまで ${Math.ceil(m.respawn)}秒`
     : m.stun > 0 ? 'スタン中'
+    : leapAiming ? 'ラッシュ：着地点を左クリック（右クリック・Escでキャンセル）'
     : m.recall > 0 ? `リコール中… ${m.recall.toFixed(1)}秒（移動・攻撃・被ダメージで中断）` : '';
 }
 
 $('restart').addEventListener('click', () => socket.emit('restart'));
-socket.on('lobby', () => { phase = 'waiting'; clearKeys(); myId = null; });
+socket.on('lobby', () => { phase = 'waiting'; leapAiming = false; clearKeys(); myId = null; });
 socket.on('disconnect', reason => { phase = 'waiting'; clearKeys(); if (reason !== 'io server disconnect') $('msg').textContent = '接続が切れました。再接続中…'; });
 socket.on('connect_error', () => { $('msg').textContent = '接続できません。サーバーを確認してください'; });
 
@@ -343,6 +359,19 @@ const pt = new THREE.Vector3(), ndc = new THREE.Vector2();
 let mouse = { clientX: 0, clientY: 0 }, aim = { x: 0, z: 0 };
 const heldKeys = new Set();
 let lastSteer = 0;
+function aimRing(color) {
+  const mesh = new THREE.Mesh(new THREE.RingGeometry(0.97, 1, 64), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.8, depthWrite: false }));
+  mesh.rotation.x = -Math.PI / 2; mesh.visible = false; scene.add(mesh); return mesh;
+}
+const leapRangeRing = aimRing(0x8fd9ff), leapPointRing = aimRing(0x8be0a0);
+function validLeapPoint(point, self) {
+  if (!mapData || Math.hypot(point.x - self.x, point.z - self.z) > cfg.leapRange || Math.abs(point.x) > mapData.half - 1 || Math.abs(point.z) > mapData.half - 1) return false;
+  const blocks = [...mapData.obst, ...Object.values(ents).filter(e => e.kind === 'tower' && !e.s.dead).map(e => ({ x: e.x, z: e.z, r: cfg.tower.radius }))];
+  if (blocks.some(o => Math.hypot(point.x - o.x, point.z - o.z) < o.r + cfg.radius + 0.03)) return false;
+  const safe = mapData.spawns[1 - mySlot], dx = point.x - self.x, dz = point.z - self.z, length2 = dx * dx + dz * dz;
+  const t = length2 ? Math.max(0, Math.min(1, ((safe.x - self.x) * dx + (safe.z - self.z) * dz) / length2)) : 0;
+  return Math.hypot(self.x + dx * t - safe.x, self.z + dz * t - safe.z) >= cfg.safeRadius + cfg.radius + 0.03;
+}
 function sendKeys() {
   const sign = mySlot === 1 ? -1 : 1;
   socket.emit('steer', { x: (Number(heldKeys.has('d')) - Number(heldKeys.has('a'))) * sign,
@@ -369,9 +398,18 @@ function groundAt(ev) {
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('mousemove', ev => { mouse = ev; });
 canvas.addEventListener('mousedown', ev => {
-  if (ev.button !== 2 || !myId || phase !== 'playing') return;
+  if (!myId || phase !== 'playing') return;
+  if (leapAiming) {
+    if (ev.button === 2) socket.emit('cancelLeap');
+    else if (ev.button === 0) {
+      const point = groundAt(ev), self = ents[myId]?.s;
+      if (self && validLeapPoint(point, self)) { clearKeys(); socket.emit('leap', point); }
+    }
+    return;
+  }
+  if (ev.button !== 2) return;
   const g = groundAt(ev);
-  const enemies = Object.values(ents).filter(e => e.s.slot !== mySlot && !e.s.dead);
+  const enemies = Object.values(ents).filter(e => e.kind !== 'projectile' && e.s.slot !== mySlot && !e.s.dead);
   // タワーの上部をクリックしても、そのタワーを選択する。
   const picked = ray.intersectObjects(enemies.map(e => e.g), true)[0];
   let foe = picked && enemies.find(e => {
@@ -389,10 +427,12 @@ canvas.addEventListener('mousedown', ev => {
 addEventListener('keydown', ev => {
   if (ev.repeat || !myId || phase !== 'playing' || ev.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
   const k = ev.key.toLowerCase();
+  if (k === 'escape') { socket.emit('cancelLeap'); return; }
+  if (leapAiming && ['q', 'c', 'b'].includes(k)) socket.emit('cancelLeap');
   if ('wasd'.includes(k) && k.length === 1) {
     ev.preventDefault(); heldKeys.add(k); sendKeys();
   } else if (k === 'q' || k === 'e') socket.emit(k === 'q' ? 'q' : 'dash', groundAt(mouse));
-  else if (k === 'c') socket.emit('c');
+  else if (k === 'c') socket.emit('c', groundAt(mouse));
   else if (k === 'b') { clearKeys(); socket.emit('recall'); }
 });
 
@@ -411,6 +451,7 @@ function frame() {
 
     e.swing = Math.max(0, e.swing - dt);
     e.flash = Math.max(0, e.flash - dt);
+    if (e.kind === 'projectile') { e.g.position.set(e.x, 0, e.z); e.g.rotation.y = e.face; continue; }
     if (e.kind === 'tower') {
       e.g.scale.y = s.dead ? 0.12 : 1;
       e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : 0x000000));
@@ -425,13 +466,13 @@ function frame() {
     const w = s.moving ? Math.sin(e.phase) * 0.9 : 0;
 
     e.g.visible = !s.dead;
-    e.g.position.set(e.x, s.moving ? Math.abs(Math.sin(e.phase)) * 0.08 : 0, e.z);
+    e.g.position.set(e.x, (s.air || 0) + (s.moving ? Math.abs(Math.sin(e.phase)) * 0.08 : 0), e.z);
     e.g.rotation.y = e.face;
     e.legL.rotation.x = w;
     e.legR.rotation.x = -w;
     e.armL.rotation.x = -w * 0.8;
     e.armR.rotation.x = e.swing > 0 ? -2.6 + 3 * (1 - e.swing / 0.25) : w * 0.8; // 振り下ろし
-    e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : s.stun > 0 ? 0x776600 : e.swing > 0 && e.attackBoost ? 0xaa1010 : s.shield > 0 ? 0x224477 : 0x000000));
+    e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : s.stun > 0 ? 0x776600 : e.swing > 0 && e.attackBoost ? 0xaa1010 : s.shield > 0 ? 0x224477 : s.speedBoost > 0 ? 0x226655 : 0x000000));
 
     if (e.bar) {
       e.bar.position.set(e.x, 1.85, e.z);
@@ -441,6 +482,13 @@ function frame() {
   }
 
   const me = ents[myId];
+  leapRangeRing.visible = leapPointRing.visible = leapAiming && !!me && phase === 'playing';
+  if (leapRangeRing.visible) {
+    const point = groundAt(mouse);
+    leapRangeRing.position.set(me.x, 0.14, me.z); leapRangeRing.scale.setScalar(cfg.leapRange);
+    leapPointRing.position.set(point.x, 0.15, point.z); leapPointRing.scale.setScalar(cfg.leapHitRange);
+    leapPointRing.material.color.setHex(validLeapPoint(point, me.s) ? 0x8be0a0 : 0xff4545);
+  }
   if (me) {
     const target = new THREE.Vector3(me.x, 0, me.z).add(CAM_OFF);
     camera.position.lerp(target, 1 - Math.exp(-dt * 6));

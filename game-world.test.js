@@ -11,12 +11,12 @@ function socket(id) {
     disconnect() { this.closed = true; },
   };
 }
-function setup(solo = false) {
+function setup(solo = false, characters = ['alex', 'alex']) {
   const match = createMatch(solo), a = socket('a'), b = socket('b');
   match.connect(a);
   if (!solo) match.connect(b);
-  a.send('selectCharacter', { id: 'alex' }); a.send('confirmCharacter');
-  if (!solo) { b.send('selectCharacter', { id: 'alex' }); b.send('confirmCharacter'); }
+  a.send('selectCharacter', { id: characters[0] }); a.send('confirmCharacter');
+  if (!solo) { b.send('selectCharacter', { id: characters[1] }); b.send('confirmCharacter'); }
   const { players, towers, robots } = match.state;
   // 各テストで必要なタワーだけ反撃させる。
   for (const t of Object.values(towers)) t.atkCd = 10000;
@@ -63,6 +63,7 @@ test('walking and dashing cannot enter enemy safe zone for either player', () =>
     ticks(match, TICK);
     assert.ok(Math.hypot(e.x - s.x, e.z - s.z) >= CFG.safeRadius + e.radius);
     sock.send('dash', s);
+    sock.send('leap', s);
     ticks(match, 8);
     assert.ok(Math.hypot(e.x - s.x, e.z - s.z) >= CFG.safeRadius + e.radius);
     sock.send('c');
@@ -261,7 +262,7 @@ test('Q stuns for 0.3 seconds, interrupts dash and recall, and blocks all action
 test('Q stuns robots but not towers, missed enemies or enemies inside their safe zone', () => {
   const { match, a, b, p, q, robots, towers } = setup();
   place(p, 0, 0); place(q, 1, 0); b.send('c');
-  const r = Object.values(robots)[0]; place(r, 1, 0); r.target = p.id;
+  const r = Object.values(robots)[0]; place(r, 1.5, 0); r.target = p.id;
   r.hp = 80;
   place(q, -6, 0);
   a.send('q', aim(r));
@@ -329,12 +330,14 @@ test('each additional character has active skills and a working passive', () => 
     assert.equal(p.hp, cfg.maxHp);
     place(p, 0, 0); a.send('steer', { x: 1, z: 0 }); match.tick();
     assert.ok(Math.abs(p.x - cfg.speed / TICK) < 1e-9);
-    a.send('c'); assert.equal(Object.keys(match.state.robots).length, 3);
+    a.send('c', { x: 5, z: 0 });
+    assert.equal(Object.keys(match.state.robots).length, id === 'mira' ? 0 : 3);
+    if (id === 'mira') assert.equal(Object.keys(match.state.projectiles).length, 1);
     for (const r of Object.values(match.state.robots)) { assert.equal(r.hp, cfg.robot.hp); assert.equal(r.cfg.dmg, cfg.robot.dmg); }
     a.send('q', { x: 5, z: 0 }); assert.equal(p.qCd, cfg.qCd);
     a.send('dash', { x: 5, z: 0 }); assert.equal(p.eCd, cfg.eCd);
     if (id === 'bastion') { assert.equal(p.shield, 2); assert.equal(p.dashT, 0); }
-    else assert.equal(p.dashT, cfg.dashTime);
+    else { assert.equal(p.speedBoost, 3); assert.equal(p.dashT, 0); }
   }
 });
 
@@ -347,4 +350,175 @@ test('Bastion guard halves incoming damage for two seconds and expires', () => {
   b.send('dash', aim(p)); a.send('q', aim(q)); assert.equal(q.hp, 280 - 14);
   ticks(match, TICK * 2 + 1); assert.equal(q.shield, 0);
   p.qCd = 0; a.send('q', aim(q)); assert.equal(q.hp, 280 - 14 - 28);
+});
+
+function assertAlexSeparated(match) {
+  const live = [...Object.values(match.state.players), ...Object.values(match.state.robots)].filter(e => !e.dead);
+  for (const a of live.filter(e => e.owner !== undefined && e.character === 'alex')) for (const b of live) {
+    if (a === b) continue;
+    assert.ok(Math.hypot(a.x - b.x, a.z - b.z) >= a.radius + b.radius - 0.0001, `${a.id} overlaps ${b.id}`);
+  }
+}
+
+test('Alex minions do not overlap at summoning, when refilling to five, or while marching', () => {
+  const { match, a, p } = setup(true);
+  a.send('c'); p.cCd = 0; a.send('c');
+  assert.equal(Object.keys(match.state.robots).length, 5); assertAlexSeparated(match);
+  for (let i = 0; i < TICK * 12; i++) { match.tick(); assertAlexSeparated(match); }
+});
+
+test('Alex minions march from either spawn around friendly towers to attack enemy towers even while their owner is dead', () => {
+  for (const slot of [0, 1]) {
+    const { match, a, b, p, q, robots, towers } = setup();
+    const owner = slot ? q : p, sock = slot ? b : a;
+    sock.send('c'); owner.dead = true; owner.respawn = 100;
+    for (let i = 0; i < TICK * 14; i++) { match.tick(); assertAlexSeparated(match); }
+    assert.ok(Object.values(towers).some(t => t.slot !== slot && t.hp < CFG.tower.hp), `slot ${slot} never reached a tower: ${JSON.stringify(Object.values(robots).map(r => ({ x: r.x, z: r.z, goal: r.objective })))}`);
+    for (const r of Object.values(robots)) assert.ok(Math.hypot(r.x - MAP.spawns[slot].x, r.z - MAP.spawns[slot].z) > 40);
+  }
+});
+
+test('Alex minions fight encountered enemies and then resume marching, choosing a new tower after destruction', () => {
+  const { match, a, p, q, robots, towers } = setup();
+  a.send('c'); const r = Object.values(robots)[0];
+  for (const other of Object.values(robots).slice(1)) delete robots[other.id];
+  place(r, 0, 0); place(p, -24, 24); place(q, 1.5, 0);
+  q.hp = 5; match.tick(); assert.equal(q.dead, true); assert.equal(r.target, q.id);
+  const before = aim(r); match.tick();
+  assert.ok(r.moving); assert.notDeepEqual(aim(r), before);
+  assert.equal(r.target, r.objective); assert.ok(towers[r.objective]);
+  const old = r.objective; towers[old].dead = true; towers[old].hp = 0;
+  match.tick(); assert.notEqual(r.objective, old); assert.equal(r.target, r.objective);
+});
+
+test('Alex separation handles coincident units, other characters, players and map edges without moving players', () => {
+  const { match, a, p, q, robots } = setup();
+  place(p, -28.9, 28.9); place(q, -28.9, 28.9);
+  a.send('c'); p.cCd = 0; a.send('c');
+  for (const r of Object.values(robots)) { place(r, -28.9, 28.9); r.stun = 1; }
+  robots.mira = { id: 'mira', owner: q.id, character: 'mira', slot: 1, radius: 0.4, hp: 30, life: 20, x: -28, z: 28, face: 0, atkCd: 100, stun: 1, bush: -1 };
+  const positions = [aim(p), aim(q), aim(robots.mira)];
+  match.tick(); assertAlexSeparated(match);
+  assert.deepEqual([aim(p), aim(q), aim(robots.mira)], positions);
+  for (const r of Object.values(robots)) assert.ok(Math.abs(r.x) <= MAP.half - 1 && Math.abs(r.z) <= MAP.half - 1);
+});
+
+test('Bastion guardians retain their owner-following behavior when no enemy is nearby', () => {
+  for (const id of ['bastion']) {
+    const match = createMatch(true), a = socket('a'); match.connect(a);
+    a.send('selectCharacter', { id }); a.send('confirmCharacter');
+    const p = match.state.players.a; a.send('c');
+    for (const t of Object.values(match.state.towers)) t.atkCd = 10000;
+    place(p, -24, 20);
+    ticks(match, TICK);
+    for (const r of Object.values(match.state.robots)) {
+      assert.equal(r.objective, undefined); assert.equal(r.target, null);
+      assert.ok(Math.hypot(r.x - p.x, r.z - p.z) <= 4.1);
+    }
+  }
+});
+
+test('Alex minions summoned against an obstacle can leave its edge and continue marching', () => {
+  const { match, a, p, robots } = setup(true);
+  place(p, -24, 0); p.face = Math.PI / 2; a.send('c');
+  const starts = new Map(Object.values(robots).map(r => [r.id, aim(r)]));
+  ticks(match, TICK * 2);
+  assertAlexSeparated(match);
+  for (const r of Object.values(robots)) {
+    const start = starts.get(r.id);
+    assert.ok(Math.hypot(r.x - start.x, r.z - start.z) > 1, `${r.id} stuck at an obstacle`);
+    for (const o of MAP.obst) assert.ok(Math.hypot(r.x - o.x, r.z - o.z) >= r.radius + o.r - 0.0001);
+  }
+});
+
+test('opposing full waves remain separated while meeting and fighting', () => {
+  const { match, a, b, p, q } = setup();
+  a.send('c'); p.cCd = 0; a.send('c'); b.send('c'); q.cCd = 0; b.send('c');
+  for (let i = 0; i < TICK * 14; i++) { match.tick(); assertAlexSeparated(match); }
+});
+
+test('Alex minions slide out of overlap when pressed directly against a wall', () => {
+  const { match, a, p, robots } = setup(true);
+  a.send('c'); const r = Object.values(robots)[0];
+  for (const other of Object.values(robots).slice(1)) delete robots[other.id];
+  place(p, 28.5, 0); place(r, 29, 0); r.stun = 1;
+  match.tick(); assertAlexSeparated(match);
+  assert.deepEqual(aim(p), { x: 28.5, z: 0 });
+  assert.ok(Math.abs(r.x) <= MAP.half - 1 && Math.abs(r.z) <= MAP.half - 1);
+});
+
+test('Alex E waits for click confirmation, leaps, then hits for 50 damage and one second stun with a 30 second cooldown', () => {
+  const { match, a, p, q } = setup(); place(p, 0, 0); place(q, 5, 0);
+  a.send('dash', { x: 4, z: 0 }); match.tick();
+  assert.equal(p.aiming, true); assert.equal(p.eCd, 0); assert.deepEqual(aim(p), { x: 0, z: 0 });
+  a.send('leap', { x: 4, z: 0 }); assert.equal(p.eCd, 30); assert.equal(p.aiming, false);
+  ticks(match, 7); assert.ok(p.air > 2); assert.equal(q.hp, 200);
+  a.send('move', { x: -10, z: 0 }); a.send('q', aim(q)); a.send('c');
+  assert.equal(p.qCd, 0); assert.equal(Object.keys(match.state.robots).length, 0);
+  ticks(match, 7); assert.equal(p.leap, null); assert.equal(p.air, 0);
+  assert.deepEqual(aim(p), { x: 4, z: 0 }); assert.equal(q.hp, 150); assert.ok(q.stun > 0.9 && q.stun <= 1);
+  a.send('dash'); assert.equal(p.aiming, false);
+});
+
+test('Alex leap rejects unarmed, out-of-range, occupied and safe-zone destinations without spending cooldown; aiming can cancel', () => {
+  const { a, p, towers } = setup(true); place(p, 0, 0);
+  a.send('leap', { x: 4, z: 0 }); assert.equal(p.leap, null);
+  a.send('dash');
+  for (const point of [{ x: 20, z: 0 }, { x: NaN, z: 0 }, { x: -8, z: 0 }]) {
+    a.send('leap', point); assert.equal(p.eCd, 0); assert.equal(p.leap, null);
+  }
+  const tower = towers['t1-2']; place(p, tower.x - 4, tower.z);
+  a.send('leap', aim(tower)); assert.equal(p.leap, null);
+  place(p, 20, -19.5); a.send('leap', { x: 28, z: -19.5 }); assert.equal(p.leap, null);
+  a.send('cancelLeap'); assert.equal(p.aiming, false); assert.equal(p.eCd, 0);
+});
+
+test('missed leaps do not damage distant enemies; stun interrupts an in-flight leap', () => {
+  const { match, a, b, p, q } = setup(); place(p, 0, 0); place(q, -5, 0);
+  a.send('dash'); a.send('leap', { x: 4, z: 0 }); ticks(match, 14); assert.equal(q.hp, 200); assert.equal(q.stun, 0);
+  place(p, 0, 0); place(q, 1, 0); p.eCd = 0; a.send('dash'); a.send('leap', { x: 4, z: 0 }); match.tick();
+  b.send('q', aim(p)); assert.equal(p.leap, null); assert.equal(p.air, 0); assert.equal(p.stun, 0.3);
+});
+
+test('Mira wind step doubles movement for three seconds with a ten second cooldown and never dashes', () => {
+  const { match, a, p } = setup(true, ['mira']); place(p, 0, 0);
+  a.send('dash'); assert.equal(p.speedBoost, 3); assert.equal(p.eCd, 10); assert.equal(p.dashT, 0);
+  a.send('steer', { x: 1, z: 0 }); match.tick(); assert.ok(Math.abs(p.x - 22 / TICK) < 1e-9);
+  a.send('steer', { x: 0, z: 0 }); ticks(match, 89); assert.equal(p.speedBoost, 0); assert.ok(p.eCd > 6.9);
+  a.send('dash'); assert.equal(p.speedBoost, 0);
+  a.send('move', { x: 5, z: 0 }); const before = p.x; match.tick(); assert.ok(Math.abs(p.x - before - 11 / TICK) < 1e-9);
+});
+
+test('Magic Scout is a fast projectile that pulls the first enemy and stuns for 1.5 seconds without summoning', () => {
+  const { match, a, p, q } = setup(false, ['mira', 'alex']); place(p, 0, 0); place(q, 5, 0);
+  a.send('c', aim(q)); assert.equal(p.cCd, 8); assert.equal(Object.keys(match.state.robots).length, 0);
+  assert.equal(Object.keys(match.state.projectiles).length, 1); match.tick();
+  assert.equal(Object.values(match.state.projectiles)[0].x, 45 / TICK);
+  ticks(match, 2); assert.equal(q.stun, 1.5); assert.equal(q.hp, 200); assert.equal(Object.keys(match.state.projectiles).length, 0);
+  ticks(match, 10); assert.ok(q.x < 2 && q.x >= p.radius + q.radius); assert.ok(q.stun > 1);
+  ticks(match, 35); assert.equal(q.stun, 0);
+});
+
+test('Magic Scout misses off-axis enemies and stops at obstacles or protected spawn zones', () => {
+  for (const scenario of ['miss', 'obstacle', 'safe']) {
+    const { match, a, p, q } = setup(false, ['mira', 'alex']); place(p, 0, 0);
+    let point;
+    if (scenario === 'miss') { place(q, 6, 2); point = { x: 14, z: 0 }; }
+    if (scenario === 'obstacle') { place(q, -12, 0); point = aim(q); }
+    if (scenario === 'safe') { place(p, 24, -17); place(q, 24, -24); point = aim(q); }
+    a.send('c', point); const before = aim(q); ticks(match, 12);
+    assert.equal(q.stun, 0, scenario); assert.equal(q.pull, null); assert.deepEqual(aim(q), before);
+    assert.equal(Object.keys(match.state.projectiles).length, 0);
+  }
+});
+
+test('Magic Scout hits minions before a player and cannot pull a target through an obstacle', () => {
+  const { match, a, p, q, robots } = setup(false, ['mira', 'alex']); place(p, 0, 0); place(q, 9, 0);
+  robots.guard = { id: 'guard', owner: q.id, character: 'bastion', slot: 1, radius: 0.4, hp: 70, maxHp: 70, life: 20,
+    cfg: { ...CFG.robot, speed: 0 }, x: 4, z: 0, face: 0, atkCd: 100, stun: 0, bush: -1 };
+  a.send('c', aim(q)); ticks(match, 3); assert.ok(robots.guard.stun > 1.4); assert.equal(q.stun, 0);
+  ticks(match, 5); assert.ok(robots.guard.x < 2); assert.equal(robots.guard.hp, 70);
+  // 引き寄せ中に召喚者が岩の向こうへ移動しても、岩を通り抜けない。
+  place(q, -4, 0); place(p, -12, 0); q.pull = { caster: p.id, remaining: 6 }; q.stun = 1.5;
+  ticks(match, 10); assert.ok(q.x >= -5.3); assert.equal(q.pull, null);
 });

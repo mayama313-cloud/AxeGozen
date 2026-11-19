@@ -51,6 +51,20 @@ const decay = time => time <= DT + 1e-9 ? 0 : time - DT;
 const isRobot = e => e.owner !== undefined;
 const protectedUnit = e => e.slot < 2 && !e.tower && dist(e, SPAWNS[e.slot]) <= CFG.safeRadius;
 
+// 着地点に本体の円が収まればよい。途中の壁や範囲攻撃の大きさは問わない。
+function validLanding(from, to, { range, radius, half, blocks, safe, travel = false }) {
+  if (!isNum(to?.x, to?.z) || dist(from, to) > range + 1e-8) return false;
+  const edge = Math.min(half - 1, half - radius);
+  if (Math.abs(to.x) > edge + 1e-8 || Math.abs(to.z) > edge + 1e-8) return false;
+  // 実際に空中を移動するラッシュは、敵の安全地帯を横切らない。
+  if (travel) {
+    const dx = to.x - from.x, dz = to.z - from.z, length2 = dx * dx + dz * dz;
+    const t = length2 ? Math.max(0, Math.min(1, ((safe.x - from.x) * dx + (safe.z - from.z) * dz) / length2)) : 0;
+    if (Math.hypot(from.x + dx * t - safe.x, from.z + dz * t - safe.z) + 1e-8 < safe.r + radius) return false;
+  }
+  return [...blocks, safe].every(o => dist(to, o) + 1e-8 >= o.r + radius);
+}
+
 function createMatch(solo = false) {
   const players = {}, robots = {}, towers = {}, projectiles = {}, monsters = {}, energy = {};
   const environment = { enabled: true, totals: [0, 0] };
@@ -82,7 +96,7 @@ function createMatch(solo = false) {
     for (const v of Object.values(players)) if (canSee(v.slot, src)) v.socket.emit(ev, data);
   }
   const boosted = (a, b) => (isRobot(a) ? players[a.owner]?.character : a.character) === 'alex' && (b.tower || isRobot(b));
-  const fx = (p, kind, extra = {}) => emitSee(p, 'fx', { id: p.id, kind, x: r2(p.x), z: r2(p.z), face: r2(p.face), ...extra });
+  const fx = (p, kind, extra = {}) => emitSee(p, 'fx', { id: p.id, character: p.character, kind, x: r2(p.x), z: r2(p.z), face: r2(p.face), ...extra });
   const attack = (a, b, dmg) => {
     fx(a, 'atk', { boosted: boosted(a, b) });
     if (a.character === 'mira' && !isRobot(a)) {
@@ -389,7 +403,7 @@ function createMatch(solo = false) {
           stun(victim, CFG.magicStun);
           victim.pull = { caster: caster.id, remaining: CFG.magicPull };
         }
-        fx(victim, abyss ? 'abyssHit' : 'magicHit');
+        if (!basic) fx(victim, abyss ? 'abyssHit' : 'magicHit');
       }
       delete projectiles[bolt.id]; return;
     }
@@ -397,9 +411,8 @@ function createMatch(solo = false) {
     if (bolt.remaining <= 0 || Math.abs(bolt.x) > HALF - 1 || Math.abs(bolt.z) > HALF - 1) delete projectiles[bolt.id];
   }
   function validDestination(p, d) {
-    if (!isNum(d?.x, d?.z) || dist(p, d) > p.cfg.leapRange || Math.abs(d.x) > HALF - 1 || Math.abs(d.z) > HALF - 1) return false;
     const blocks = [...OBST, ...Object.values(towers).filter(t => !t.dead).map(t => ({ ...t, r: t.radius }))];
-    return clearSegment(d, d, p.radius, blocks) && clearSegment(p, d, p.radius, [{ ...SPAWNS[1 - p.slot], r: CFG.safeRadius }]);
+    return validLanding(p, d, { range: p.cfg.leapRange, radius: p.radius, half: HALF, blocks, safe: { ...SPAWNS[1 - p.slot], r: CFG.safeRadius }, travel: p.character === 'alex' });
   }
   function tickWarp(p) {
     p.warp.remaining = decay(p.warp.remaining);
@@ -710,6 +723,6 @@ function createMatch(solo = false) {
   return { connect, tick, empty: () => Object.keys(players).length === 0, state: { players, robots, towers, projectiles, monsters, energy, environment, camps } };
 }
 
-const ArenaWorld = { createMatch, CFG, MAP, TICK, CHARACTERS, characterFor, configFor };
+const ArenaWorld = { createMatch, CFG, MAP, TICK, CHARACTERS, characterFor, configFor, validLanding };
 if (typeof module !== 'undefined' && module.exports) module.exports = ArenaWorld;
 else globalThis.ArenaWorld = ArenaWorld;

@@ -532,12 +532,9 @@ const skillAim = createSkillAim({
   },
 });
 function validLeapPoint(point, self) {
-  if (!mapData || Math.hypot(point.x - self.x, point.z - self.z) > cfg.leapRange || Math.abs(point.x) > mapData.half - 1 || Math.abs(point.z) > mapData.half - 1) return false;
-  const blocks = [...mapData.obst, ...Object.values(ents).filter(e => e.kind === 'tower' && !e.s.dead).map(e => ({ x: e.x, z: e.z, r: cfg.tower.radius }))];
-  if (blocks.some(o => Math.hypot(point.x - o.x, point.z - o.z) < o.r + cfg.radius + 0.03)) return false;
-  const safe = mapData.spawns[1 - mySlot], dx = point.x - self.x, dz = point.z - self.z, length2 = dx * dx + dz * dz;
-  const t = length2 ? Math.max(0, Math.min(1, ((safe.x - self.x) * dx + (safe.z - self.z) * dz) / length2)) : 0;
-  return Math.hypot(self.x + dx * t - safe.x, self.z + dz * t - safe.z) >= cfg.safeRadius + cfg.radius + 0.03;
+  if (!mapData) return false;
+  const blocks = [...mapData.obst, ...Object.values(ents).filter(e => e.kind === 'tower' && !e.s.dead).map(e => ({ x: e.s.x, z: e.s.z, r: cfg.tower.radius }))];
+  return ArenaWorld.validLanding(self, point, { range: cfg.leapRange, radius: cfg.radius, half: mapData.half, blocks, safe: { ...mapData.spawns[1 - mySlot], r: cfg.safeRadius }, travel: self.character === 'alex' });
 }
 function sendKeys() {
   const sign = mySlot === 1 ? -1 : 1;

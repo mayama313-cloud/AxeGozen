@@ -27,6 +27,42 @@ const ticks = (match, n) => { for (let i = 0; i < n; i++) match.tick(); };
 const aim = e => ({ x: e.x, z: e.z });
 function place(e, x, z) { Object.assign(e, { x, z, dest: null, target: null, bush: -1 }); }
 
+test('Alex and Lucia can land in a gap exactly one body wide, but reject overlapping destinations', () => {
+  for (const character of ['alex', 'lucia']) {
+    const { match, a, p, towers } = setup(true, [character]);
+    place(p, 0, 0);
+    place(towers['t1-0'], 4, 1.8); place(towers['t1-1'], 4, -1.8);
+    if (character === 'alex') a.send('dash');
+    const event = character === 'alex' ? 'leap' : 'dash';
+    a.send(event, { x: 4, z: 0.01 });
+    assert.equal(p.eCd, 0);
+    assert.equal(p.warp, null); assert.equal(p.leap, null);
+    a.send(event, { x: 4, z: 0 });
+    assert.ok(p.eCd > 0);
+    ticks(match, character === 'alex' ? 14 : 30);
+    assert.ok(Math.abs(p.x - 4) < 1e-8 && Math.abs(p.z) < 1e-8);
+  }
+});
+
+test('landing beyond a rock is allowed when the body fits even if the landing AoE overlaps it', () => {
+  for (const character of ['alex', 'lucia']) {
+    const { match, a, p } = setup(true, [character]);
+    place(p, -8, -3.5);
+    if (character === 'alex') a.send('dash');
+    a.send(character === 'alex' ? 'leap' : 'dash', { x: -8, z: 3.5 });
+    assert.ok(p.eCd > 0);
+    ticks(match, character === 'alex' ? 14 : 30);
+    assert.deepEqual(aim(p), { x: -8, z: 3.5 });
+  }
+});
+
+test('Lucia warp checks the safe zone at the destination rather than along a nonexistent travel path', () => {
+  const { match, a, p } = setup(true, ['lucia']);
+  place(p, 20, -19.5); a.send('dash', { x: 28, z: -19.5 });
+  assert.ok(p.warp); ticks(match, 30);
+  assert.deepEqual(aim(p), { x: 28, z: -19.5 });
+});
+
 test('five Alex minions attack a large monster from outside its body without overlapping', () => {
   const { match, a, p, robots } = setup(true);
   place(p, 0, 7);
@@ -690,7 +726,7 @@ test('Lucia E rejects unsafe destinations and is interrupted by stun', () => {
     a.send('dash', d); assert.equal(p.warp, null); assert.equal(p.eCd, 0);
   }
   const tower = towers['t1-2']; place(p, tower.x - 4, tower.z); a.send('dash', aim(tower)); assert.equal(p.warp, null);
-  place(p, 20, -19.5); a.send('dash', { x: 28, z: -19.5 }); assert.equal(p.warp, null);
+  place(p, 20, -19.5); a.send('dash', { x: 24, z: -20 }); assert.equal(p.warp, null);
   place(p, 0, 0); a.send('dash', { x: 4, z: 0 }); match.tick(); b.send('q', aim(p));
   assert.equal(p.warp, null); assert.equal(p.stun, 0.3); ticks(match, 30); assert.deepEqual(aim(p), { x: 0, z: 0 });
 });

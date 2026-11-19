@@ -80,6 +80,8 @@
   }
   function sound(kind, volume = 1, character = '') {
     if (!context || context.state !== 'running' || settings.muted || settings.effects <= 0 || document.hidden || volume <= 0) return;
+    if (kind === 'q') kind = ({ alex: 'alexQ', mira: 'miraQ', bastion: 'bastionQ' })[character] || kind;
+    if (kind === 'summon') kind = character === 'bastion' ? 'bastionC' : 'alexC';
     const now = context.currentTime, cooldown = ['atk', 'hit', 'boosted'].includes(kind) ? 0.065 : 0.1;
     if (now - (lastSound.get(kind) ?? -Infinity) < cooldown) return;
     lastSound.set(kind, now);
@@ -90,9 +92,19 @@
       case 'atk': tone(75, 0.09, 0.1 * v, 'triangle', 0, effects, 48); noise(0.07, 0.07 * v, 2300); break;
       case 'boosted': tone(52, 0.16, 0.15 * v, 'sawtooth', 0, effects, 35); noise(0.1, 0.11 * v, 900); break;
       case 'hit': tone(43, 0.09, 0.12 * v, 'triangle', 0, effects, 30); noise(0.055, 0.1 * v, 700); break;
+      // 斬撃・氷・地響きを、音色とリズムの両方で区別する。
       case 'q':
-        noise(0.2, 0.15 * v, character === 'mira' ? 3600 : 1800);
-        tone(character === 'mira' ? 88 : 74, 0.22, 0.14 * v, 'triangle', 0, effects, 50); break;
+      case 'alexQ':
+        noise(0.16, 0.16 * v, 2100);
+        tone(82, 0.16, 0.13 * v, 'sawtooth', 0, effects, 48);
+        tone(94, 0.1, 0.07 * v, 'triangle', 0.04, effects, 70); break;
+      case 'miraQ':
+        phrase([95, 102, 107], 0.045, 0.09 * v, 'sine');
+        noise(0.3, 0.11 * v, 5200); break;
+      case 'bastionQ':
+        tone(31, 0.45, 0.22 * v, 'sine', 0, effects, 20);
+        tone(43, 0.18, 0.12 * v, 'triangle', 0.09, effects, 27);
+        noise(0.35, 0.2 * v, 380); break;
       case 'leap': tone(45, 0.3, 0.17 * v, 'triangle', 0, effects, 83); noise(0.18, 0.09 * v, 1600); break;
       case 'leapHit': tone(38, 0.3, 0.25 * v, 'sine', 0, effects, 23); noise(0.22, 0.23 * v, 500); break;
       case 'magic': tone(72, 0.23, 0.16 * v, 'sine', 0, effects, 100); tone(79, 0.18, 0.08 * v, 'triangle'); break;
@@ -105,7 +117,13 @@
       case 'heal': phrase([76, 81], 0.07, 0.07 * v); break;
       case 'wind': tone(64, 0.4, 0.13 * v, 'sine', 0, effects, 88); noise(0.35, 0.13 * v, 2800); break;
       case 'shield': phrase([60, 67, 72], 0.065, 0.12 * v); break;
-      case 'summon': phrase([57, 64, 69], 0.075, 0.12 * v, 'square'); break;
+      case 'alexC':
+        phrase([76, 76, 83], 0.065, 0.1 * v, 'square');
+        noise(0.08, 0.07 * v, 2500, 0.14); break;
+      case 'bastionC':
+        phrase([43, 50, 55], 0.13, 0.14 * v, 'triangle');
+        tone(67, 0.5, 0.07 * v, 'sine', 0.13);
+        noise(0.2, 0.1 * v, 650); break;
       case 'aim': tone(81, 0.08, 0.06 * v); break;
       case 'recall': phrase([64, 69, 76], 0.15, 0.1); break;
       case 'recallCancel': tone(62, 0.15, 0.08, 'sine', 0, effects, 50); break;
@@ -186,7 +204,7 @@
   session.on('fx', d => {
     const source = entity(d.id), volume = d.id === myId ? 1 : distanceVolume(d);
     if (d.kind === 'atk') sound(d.boosted ? 'boosted' : 'atk', volume * (previous?.robots.some(r => r.id === d.id) ? 0.45 : 0.75));
-    else sound(d.kind, volume, source?.character);
+    else sound(d.kind, volume, d.character || source?.character);
   });
   session.on('hit', d => sound('hit', d.id === myId ? 0.9 : distanceVolume(entity(d.id)) * 0.45));
   session.on('heal', d => { if (d.id === myId) sound('heal'); });

@@ -2,11 +2,11 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Arena 1v1</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #10161a; color: #eef3f6; font-family: system-ui, "Hiragino Sans", "Yu Gothic", sans-serif; }
-  #gameCanvas { display: block; width: 100%; height: 100%; }
+  #gameCanvas { display: block; width: 100%; height: 100%; touch-action: none; }
   #hud { position: fixed; inset: 0; pointer-events: none; }
   #modes, #skills { pointer-events: auto; }
   .bar { position: fixed; top: 14px; width: 34%; height: 16px; background: #101820; border: 1px solid #b9cedd; }
@@ -21,7 +21,10 @@
   #modes button[hidden] { display: none; }
   #msg { position: fixed; top: 22%; width: 100%; text-align: center; font-size: 22px; text-shadow: 0 2px 6px #000; pointer-events: none; }
   #skills { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; }
-  .sk { position: relative; width: 58px; height: 58px; border: 2px solid #e6c15a; background: #0b1013cc; display: grid; place-items: center; font-weight: 700; font-size: 20px; overflow: hidden; }
+  .sk { position: relative; box-sizing: content-box; padding: 0; color: #eef3f6; font-family: inherit; width: 58px; height: 58px; border: 2px solid #e6c15a; background: #0b1013cc; display: grid; place-items: center; font-weight: 700; font-size: 20px; overflow: hidden; cursor: pointer; touch-action: none; user-select: none; }
+  .sk > * { pointer-events: none; }
+  .sk:disabled { opacity: .55; cursor: default; }
+  .sk.targeting { border-color: #7de5ff; box-shadow: 0 0 15px #5edbffa0; }
   .sk small { position: absolute; bottom: 2px; left: 2px; right: 2px; text-align: center; font-size: 9px; line-height: 1.1; font-weight: 400; opacity: .8; }
   .sk b { position: absolute; left: 0; bottom: 0; width: 100%; height: 0; background: #000b; }
   #help { position: fixed; bottom: 6px; left: 12px; font-size: 12px; opacity: .8; max-width: 30%; background: #10161aaa; pointer-events: none; }
@@ -70,6 +73,39 @@
   #controlsPanel summary, #controlsPanel button { cursor: pointer; }
   #controlsPanel label { display: flex; justify-content: space-between; align-items: center; margin: 8px 0; }
   #controlsPanel button, #controlsPanel select { background: #203d4c; color: #eef3f6; border: 1px solid #8eafbd; padding: 5px; }
+  #touchControls, #touchHelp { display: none; }
+  .touch-ui #touchControls { display: block; }
+  #touchStick { position: fixed; left: max(12px, env(safe-area-inset-left)); bottom: max(20px, env(safe-area-inset-bottom)); width: 124px; height: 124px; border: 2px solid #9ac5de99; border-radius: 50%; background: #0c1d2d99; pointer-events: auto; touch-action: none; user-select: none; }
+  #touchStick::before { content: '移動'; position: absolute; width: 100%; text-align: center; top: 15px; color: #b5cfdd; font-size: 11px; }
+  #touchKnob { position: absolute; top: 50%; left: 50%; width: 48px; height: 48px; border-radius: 50%; background: #69bed9bb; border: 2px solid #b4efff; transform: translate(-50%, -50%); pointer-events: none; }
+  .touch-button { position: fixed; pointer-events: auto; touch-action: none; user-select: none; border-radius: 50%; border: 2px solid #f2d57e; background: #203747ed; color: #fff1c5; font: 700 15px system-ui; width: 64px; height: 64px; }
+  .touch-button:disabled { opacity: .5; }
+  #touchAttack { right: max(148px, calc(env(safe-area-inset-right) + 148px)); bottom: max(26px, env(safe-area-inset-bottom)); }
+  #touchCancel { right: max(148px, calc(env(safe-area-inset-right) + 148px)); bottom: calc(max(26px, env(safe-area-inset-bottom)) + 74px); border-color: #ff9a8b; color: #ffd1c9; font-size: 12px; }
+  .touch-ui #skills { left: auto; right: max(12px, env(safe-area-inset-right)); bottom: max(20px, env(safe-area-inset-bottom)); transform: none; display: grid; grid-template-columns: repeat(2, 54px); gap: 10px; }
+  .touch-ui .sk { width: 50px; height: 50px; border-radius: 12px; }
+  .touch-ui #help { display: none; }
+  .touch-ui #touchHelp { display: block; position: fixed; left: max(12px, env(safe-area-inset-left)); bottom: calc(max(20px, env(safe-area-inset-bottom)) + 138px); color: #d4e6f0; font-size: 10px; background: #10161abf; padding: 5px 7px; border-radius: 5px; max-width: 45%; }
+  .touch-ui .bar { top: max(8px, env(safe-area-inset-top)); height: 10px; width: 36%; }
+  .touch-ui #meBar { left: 8px; } .touch-ui #foeBar { right: 8px; }
+  .touch-ui #score { top: max(1px, env(safe-area-inset-top)); font-size: 18px; }
+  .touch-ui #objective { top: calc(max(8px, env(safe-area-inset-top)) + 22px); left: 8px; max-width: calc(100% - 34px); font-size: 10px; line-height: 1.4; }
+  .touch-ui #status { top: calc(max(8px, env(safe-area-inset-top)) + 52px); left: 8px; max-width: 48%; font-size: 9px; }
+  .touch-ui #modes { top: calc(max(8px, env(safe-area-inset-top)) + 52px); right: max(8px, env(safe-area-inset-right)); gap: 4px; }
+  .touch-ui #modes button { padding: 8px 6px; font-size: 10px; }
+  .touch-ui #msg { top: 145px; font-size: 14px; box-sizing: border-box; padding: 0 12px; }
+  .touch-ui #killFeed { top: 185px; right: 8px; width: min(280px, 70vw); font-size: 10px; }
+  .touch-ui .kill-entry { padding: 6px; }
+  .touch-ui #controlsPanel { top: calc(max(8px, env(safe-area-inset-top)) + 94px); bottom: auto; right: max(8px, env(safe-area-inset-right)); width: 145px; padding: 8px; font-size: 10px; box-sizing: border-box; }
+  .touch-ui #audioPanel { top: calc(max(8px, env(safe-area-inset-top)) + 94px); bottom: auto; right: calc(max(8px, env(safe-area-inset-right)) + 153px); width: 120px; font-size: 10px; }
+  .touch-ui #audioPanel summary { padding: 8px; }
+  .touch-ui #controlsPanel[open], .touch-ui #audioPanel[open] { width: min(285px, calc(100vw - 16px)); right: 8px; z-index: 45; max-height: calc(100dvh - 260px); overflow: auto; }
+  .touch-ui:has(#lobby:not([hidden])) #controlsPanel, .touch-ui:has(#lobby:not([hidden])) #audioPanel { top: auto; bottom: max(8px, env(safe-area-inset-bottom)); }
+  .touch-ui:has(#lobby:not([hidden])) #controlsPanel[open], .touch-ui:has(#lobby:not([hidden])) #audioPanel[open] { max-height: 65dvh; }
+  .touch-ui #lobby { padding-bottom: 150px; }
+  .touch-ui #characterSelect:not([hidden]) .lobby-actions { position: fixed; left: 8px; right: 8px; bottom: calc(max(8px, env(safe-area-inset-bottom)) + 48px); z-index: 35; background: #14252ef5; padding: 10px; border-radius: 8px; gap: 6px; }
+  .touch-ui .lobby-actions button { padding: 10px !important; font-size: 12px !important; }
+  @media (max-width: 360px) { .touch-ui #touchStick { width: 104px; height: 104px; left: 8px; } .touch-ui #touchAttack, .touch-ui #touchCancel { width: 52px; height: 52px; right: 132px; } .touch-ui #skills { right: 8px; gap: 6px; } }
 </style>
 </head>
 <body>
@@ -121,11 +157,17 @@
 <div id="msg">接続中…</div>
 <div id="killFeed" role="log" aria-live="polite" aria-label="キルログ" aria-relevant="additions"></div>
 <div id="skills">
-  <div class="sk" id="qSkill">Q<small id="qLabel">Qスキル</small><b id="qCooldown"></b></div>
-  <div class="sk" id="eSkill">E<small id="eLabel">Eスキル</small><b id="eCooldown"></b></div>
-  <div class="sk" id="cSkill">C<small id="cLabel">Cスキル</small><b id="cCooldown"></b></div>
-  <div class="sk" title="5秒間で自陣に帰還。移動・攻撃・被ダメージで中断">B<small>リコール</small><b id="recallProgress"></b></div>
+  <button type="button" class="sk" id="qSkill" aria-label="Qスキル">Q<small id="qLabel">Qスキル</small><b id="qCooldown"></b></button>
+  <button type="button" class="sk" id="eSkill" aria-label="Eスキル">E<small id="eLabel">Eスキル</small><b id="eCooldown"></b></button>
+  <button type="button" class="sk" id="cSkill" aria-label="Cスキル">C<small id="cLabel">Cスキル</small><b id="cCooldown"></b></button>
+  <button type="button" class="sk" id="bSkill" aria-label="リコール" title="5秒間で自陣に帰還。移動・攻撃・被ダメージで中断">B<small>リコール</small><b id="recallProgress"></b></button>
 </div>
+<div id="touchControls">
+  <div id="touchStick" data-touch-control aria-label="移動スティック"><span id="touchKnob"></span></div>
+  <button id="touchAttack" class="touch-button" type="button" data-touch-control aria-label="近くの敵を通常攻撃">攻撃</button>
+  <button id="touchCancel" class="touch-button" type="button" data-touch-control hidden>×<br>キャンセル</button>
+</div>
+<div id="touchHelp">左スティック：移動<br>スキルを押す→地面をタップ<br>ドラッグして離しても発動</div>
 <div id="help">WASD: 移動 / 右クリック: 移動・通常攻撃 / 攻撃スキル: キー長押しで照準、離すか左クリックで発動（右クリック・Escでキャンセル） / 強化スキル: 即時発動 / B: 5秒リコール<br>敵タワー5本を全て破壊すると勝利。復活は5秒＋自陣の破壊済みタワー数×5秒。</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -135,6 +177,7 @@
 <script src="audio.js"></script>
 <script src="skill-aim.js"></script>
 <script src="controls.js"></script>
+<script src="touch-controls.js"></script>
 <script src="game.js"></script>
 <script src="lobby.js"></script>
 </body>

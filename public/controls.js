@@ -11,6 +11,9 @@
   const panel = document.createElement('details'); panel.id = 'controlsPanel';
   panel.innerHTML = '<summary>操作・表示設定</summary><label>プレイヤーHPバー <select id="hpBarPosition"><option value="screen">画面上に固定</option><option value="overhead">キャラクターの上</option></select></label><label>方向選択 <select id="aimMode"><option value="hold">ホールド</option><option value="toggle">切り替え</option></select></label><div id="keyBindings"></div><button id="resetControls" type="button">初期設定に戻す</button><p id="controlHint">変更するキーを押してから割り当てます。重複キーは交換します。</p>';
   document.body.append(panel);
+  for (const settingsPanel of [panel, document.getElementById('audioPanel')]) settingsPanel.addEventListener('toggle', () => {
+    if (settingsPanel.open) for (const other of [panel, document.getElementById('audioPanel')]) if (other !== settingsPanel) other.open = false;
+  });
   const select = document.getElementById('aimMode'); select.value = mode;
   const hpSelect = document.getElementById('hpBarPosition'); hpSelect.value = hpBar;
   const names = { w: '上へ移動', a: '左へ移動', s: '下へ移動', d: '右へ移動', q: 'Qスキル', e: 'Eスキル', c: 'Cスキル', b: 'リコール' };

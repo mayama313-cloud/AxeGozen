@@ -95,6 +95,7 @@
       case 'chargeHit': tone(32, 0.2, 0.2 * v, 'triangle', 0, effects, 21); noise(0.15, 0.17 * v, 500); break;
       case 'grab': tone(42, 0.3, 0.15 * v, 'sawtooth', 0, effects, 34); noise(0.12, 0.12 * v, 1100); break;
       case 'throw': tone(48, 0.4, 0.13 * v, 'triangle', 0, effects, 82); noise(0.3, 0.1 * v, 2100); break;
+      case 'throwImpact': tone(30, 0.3, 0.22 * v, 'sine', 0, effects, 20); noise(0.22, 0.2 * v, 480); break;
       case 'uppercut': tone(29, 0.16, 0.18 * v, 'sine', 0, effects, 45); tone(57, 0.28, 0.12 * v, 'square', 0.06, effects, 90); noise(0.2, 0.14 * v, 1500); break;
       case 'boosted': tone(52, 0.16, 0.15 * v, 'sawtooth', 0, effects, 35); noise(0.1, 0.11 * v, 900); break;
       case 'hit': tone(43, 0.09, 0.12 * v, 'triangle', 0, effects, 30); noise(0.055, 0.1 * v, 700); break;

@@ -425,6 +425,7 @@ socket.on('fx', d => {
   else if (['warp', 'stealth', 'abyssHit'].includes(d.kind)) arc(d.x, d.z, d.face, 1.5, Math.PI, color);
   else if (['grab', 'uppercut'].includes(d.kind)) arc(d.x, d.z, d.face, d.range, d.halfArc, 0xffa358);
   else if (['charge', 'chargeHit', 'throw'].includes(d.kind)) arc(d.x, d.z, d.face, 2, 0.7, 0xffa358);
+  else if (d.kind === 'throwImpact') arc(d.x, d.z, d.face, 2, Math.PI, 0xffa358);
 });
 socket.on('heal', d => { const e = ents[d.id]; if (e) dmgText(e, `+${d.amount}`, false, '#8bffae'); });
 
@@ -439,6 +440,10 @@ function hud(st) {
   const list = st.players;
   const m = list.find(s => s.id === myId), f = list.find(s => s.id !== myId);
   if (!m || !cfg) return;
+  const locked = m.dead || m.stun > 0 || m.warping > 0 || m.air > 0 || m.charging || m.grabbing || m.grabbed || m.flying || phase !== 'playing';
+  for (const key of ['q', 'e', 'c', 'b']) $(key + 'Skill').disabled = locked || (key !== 'b' && m[key + 'Cd'] > 0);
+  $('touchAttack').disabled = locked;
+  touchControls?.update();
   $('playerHpFill').style.width = `${Math.max(0, m.hp / m.maxHp) * 100}%`;
   $('enemyHpFill').style.width = f ? `${Math.max(0, f.hp / f.maxHp) * 100}%` : '0%';
   const character = ArenaWorld.characterFor(m.character);
@@ -466,7 +471,7 @@ function hud(st) {
     : m.grabbing ? '敵を掴んでいます'
     : m.charging ? '猪突猛進！'
     : m.warping > 0 ? `魔影転移・無敵… ${m.warping.toFixed(1)}秒`
-    : skillAim.current ? `${character.skills[skillAim.current.key].name}：${gameControls.mode === 'hold' ? 'キーを離すか左クリックで発動' : '左クリックで発動・同じキーでキャンセル'}（右クリック・Escでキャンセル）`
+    : skillAim.current ? `${character.skills[skillAim.current.key].name}：${touchControls?.active ? '地面をタップして発動／×でキャンセル' : gameControls.mode === 'hold' ? 'キーを離すか左クリックで発動' : '左クリックで発動・同じキーでキャンセル'}${touchControls?.active ? '' : '（右クリック・Escでキャンセル）'}`
     : m.recall > 0 ? `リコール中… ${m.recall.toFixed(1)}秒（移動・攻撃・被ダメージで中断）` : '';
 }
 
@@ -515,6 +520,7 @@ const ray = new THREE.Raycaster();
 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const pt = new THREE.Vector3(), ndc = new THREE.Vector2();
 let mouse = { clientX: innerWidth / 2, clientY: innerHeight / 2 }, aim = { x: 0, z: 0 };
+let touchControls = null, touchTarget = null, touchMove = { x: 0, z: 0 };
 const heldKeys = new Set();
 let lastSteer = 0;
 function aimRing(color) {
@@ -534,10 +540,12 @@ const skillAim = createSkillAim({
   mode: () => gameControls.mode,
   self: () => ents[myId]?.s,
   playing: () => phase === 'playing',
-  point: () => groundAt(mouse),
+  point: () => touchTarget || groundAt(mouse),
   validLeap: validLeapPoint,
   emit: (event, data) => { if (event === 'leap' || (event === 'dash' && data)) clearKeys(); socket.emit(event, data); },
   changed: current => {
+    if (!current) touchTarget = null;
+    touchControls?.update();
     canvas.style.cursor = current ? 'crosshair' : '';
     const color = current?.character === 'lucia' ? 0xc58cff : current?.character === 'darius' ? 0xffa358 : 0x72d8ff;
     skillAreaMesh.material.color.setHex(color); skillLineMesh.material.color.setHex(color); skillArrow.material.color.setHex(color);
@@ -554,18 +562,23 @@ function validLeapPoint(point, self) {
 }
 function sendKeys() {
   const sign = mySlot === 1 ? -1 : 1;
-  socket.emit('steer', { x: (Number(heldKeys.has('d')) - Number(heldKeys.has('a'))) * sign,
-    z: (Number(heldKeys.has('s')) - Number(heldKeys.has('w'))) * sign });
+  let x = Number(heldKeys.has('d')) - Number(heldKeys.has('a')) + touchMove.x;
+  let z = Number(heldKeys.has('s')) - Number(heldKeys.has('w')) + touchMove.z;
+  const length = Math.max(1, Math.hypot(x,z));
+  socket.emit('steer', { x: x / length * sign, z: z / length * sign });
   lastSteer = performance.now();
 }
 function clearKeys() {
   heldKeys.clear();
+  touchControls?.reset(); touchMove = { x: 0, z: 0 };
   if (myId && socket.connected) sendKeys();
 }
 addEventListener('controlschange', () => { skillAim.cancel(); clearKeys(); });
 addEventListener('blur', () => { skillAim.cancel(); clearKeys(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { skillAim.cancel(); clearKeys(); } });
-document.addEventListener('pointerdown', ev => { if (ev.target !== canvas) skillAim.cancel(); }, { capture: true });
+document.addEventListener('pointerdown', ev => {
+  if (ev.target !== canvas && !ev.target.closest('[data-touch-control], #skills')) { skillAim.cancel(); clearKeys(); }
+}, { capture: true });
 addEventListener('keyup', ev => {
   const key = gameControls.action(ev.code);
   if (heldKeys.delete(key)) sendKeys();
@@ -583,6 +596,7 @@ function groundAt(ev) {
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('mousemove', ev => { mouse = ev; });
 canvas.addEventListener('mousedown', ev => {
+  if (ev.sourceCapabilities?.firesTouchEvents) return;
   if (!myId || phase !== 'playing') return;
   if (skillAim.current) {
     if (ev.button === 2) skillAim.cancel();
@@ -590,6 +604,9 @@ canvas.addEventListener('mousedown', ev => {
     return;
   }
   if (ev.button !== 2) return;
+  commandAt(ev);
+});
+function commandAt(ev) {
   const g = groundAt(ev);
   const enemies = Object.values(ents).filter(e => !['projectile', 'energy'].includes(e.kind) && e.s.slot !== mySlot && !e.s.dead);
   // タワーの上部をクリックしても、そのタワーを選択する。
@@ -605,7 +622,7 @@ canvas.addEventListener('mousedown', ev => {
   }
   if (foe) socket.emit('chase', { id: foe.s.id });
   else { socket.emit('move', g); marker(g); }
-});
+}
 addEventListener('keydown', ev => {
   if (ev.repeat || ev.ctrlKey || ev.metaKey || ev.altKey || !myId || phase !== 'playing' || ev.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
   const k = gameControls.action(ev.code);
@@ -621,11 +638,34 @@ addEventListener('keydown', ev => {
 });
 
 // ---------- 描画ループ ----------
+touchControls = createTouchControls({
+  canvas, stick: $('touchStick'), knob: $('touchKnob'), skills: { q: $('qSkill'), e: $('eSkill'), c: $('cSkill'), b: $('bSkill') },
+  attackButton: $('touchAttack'), cancelButton: $('touchCancel'), aim: skillAim,
+  canPlay: () => {
+    const s = ents[myId]?.s;
+    return phase === 'playing' && s && !s.dead && !(s.stun > 0) && !(s.air > 0) && !(s.warping > 0) && !s.charging && !s.grabbing && !s.grabbed && !s.flying;
+  },
+  move: (x,z) => { touchMove = { x,z }; if (myId) sendKeys(); },
+  targetAt: groundAt, setTarget: point => { touchTarget = point; }, command: commandAt,
+  defaultTarget: key => {
+    const s = ents[myId].s, distance = Math.min(key === 'e' ? cfg.leapRange : key === 'q' ? cfg.qRange : cfg.cRange || cfg.magicRange, 4);
+    return { x: s.x + Math.sin(s.face)*distance, z: s.z + Math.cos(s.face)*distance };
+  },
+  instant: key => (key === 'e' && ['mira','bastion'].includes(ents[myId]?.s.character)) || (key === 'c' && ents[myId]?.s.character === 'lucia'),
+  activate: key => socket.emit(key === 'e' ? 'dash' : key),
+  recall: () => { clearKeys(); socket.emit('recall'); },
+  attack: () => {
+    const me = ents[myId];
+    const enemy = Object.values(ents).filter(e => !['energy','projectile'].includes(e.kind) && e.s.slot !== mySlot && !e.s.dead && Math.hypot(e.x-me.x,e.z-me.z) <= 14)
+      .sort((a,b) => Math.hypot(a.x-me.x,a.z-me.z)-Math.hypot(b.x-me.x,b.z-me.z))[0];
+    if (enemy) socket.emit('chase', { id: enemy.s.id });
+  },
+});
 const clock = new THREE.Clock();
 function frame() {
   const dt = Math.min(clock.getDelta(), 0.1), t = clock.elapsedTime;
   const k = 1 - Math.exp(-dt * 20);
-  if (phase === 'playing' && heldKeys.size && performance.now() - lastSteer >= 100) sendKeys();
+  if (phase === 'playing' && (heldKeys.size || touchMove.x || touchMove.z) && performance.now() - lastSteer >= 100) sendKeys();
 
   for (const e of Object.values(ents)) {
     const s = e.s;
@@ -682,7 +722,7 @@ function frame() {
   skillArea.visible = showingAim && targeting.kind === 'cone';
   skillLine.visible = showingAim && ['projectile', 'summon', 'charge'].includes(targeting.kind);
   if (showingAim) {
-    const point = groundAt(mouse);
+    const point = touchTarget || groundAt(mouse);
     const face = Math.atan2(point.x - me.x, point.z - me.z);
     leapRangeRing.position.set(me.x, 0.14, me.z);
     leapRangeRing.scale.setScalar(['leap', 'warp', 'charge'].includes(targeting.kind) ? cfg.leapRange : targeting.key === 'c' ? cfg.cRange : cfg.qRange);

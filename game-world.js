@@ -33,7 +33,7 @@ const CHARACTERS = [
     stats: { qRange: 12, qDmg: 50, qStun: 0, qCd: 6, qSpeed: 26, qRadius: 0.45, qHeal: 30, eCd: 12, cCd: 20, leapRange: 12, leapHitRange: 3, warpTime: 1, warpDmg: 40, lifeSteal: 0.1 }, robot: {} },
   { id: 'darius', name: 'ダリウス', role: '獣・突進・投げ', color: '#dc9255',
     passive: '巨獣の体：最大HP300。受けるスタンが毎回0.5秒長くなる。通常攻撃は15ダメージの至近距離攻撃で、間隔は1.6秒。',
-    skills: { q: { name: '獣王の投擲', text: '近くの敵1体を掴んで50ダメージ。0.6秒拘束して前方へ投げ、着地後1秒スタン。CD10秒。' }, e: { name: '猪突猛進', text: '射程20の指定地点へ突進。接触した敵に40ダメージ・1秒スタン。壁に当たると停止。CD20秒。' }, c: { name: '猛牙の突き上げ', text: '近距離の敵1体に20ダメージ。真上に浮かせ、2秒スタン。CD5秒。' } },
+    skills: { q: { name: '獣王の投擲', text: '近くの敵1体を掴み、0.6秒拘束して前方へ投げる。衝突・着地時に50ダメージ、その後1秒スタン。CD10秒。' }, e: { name: '猪突猛進', text: '射程20の指定地点へ突進。接触した敵に40ダメージ・1秒スタン。壁に当たると停止。CD20秒。' }, c: { name: '猛牙の突き上げ', text: '近距離の敵1体に20ダメージ。真上に浮かせ、2秒スタン。CD5秒。' } },
     stats: { maxHp: 300, radius: 1.05, speed: 8, atkDmg: 15, atkRange: 2, atkCd: 1.6, stunPenalty: 0.5, qRange: 2.2, qArc: Math.PI / 3, qDmg: 50, qCd: 10, qStun: 0, eCd: 20, cCd: 5, leapRange: 20, chargeSpeed: 25, chargeDmg: 40, chargeStun: 1, holdTime: 0.6, throwRange: 6, throwTime: 0.5, cRange: 2.2, cDmg: 20, cStun: 2, liftTime: 0.6 }, robot: {} },
 ];
 const characterFor = id => CHARACTERS.find(c => c.id === id);
@@ -372,7 +372,7 @@ function createMatch(solo = false) {
   function grab(p) {
     fx(p, 'grab', { range: p.cfg.qRange, halfArc: p.cfg.qArc });
     const victim = nearestMelee(p, p.cfg.qRange);
-    if (!victim || hit(p, victim, p.cfg.qDmg) <= 0 || victim.dead || victim.tower) return;
+    if (!victim || victim.tower) return;
     interrupt(victim); victim.flight = null;
     victim.held = { caster: p.id, remaining: p.cfg.holdTime, face: p.face };
     p.grabbing = victim.id; p.keys = null; p.target = null;
@@ -405,7 +405,7 @@ function createMatch(solo = false) {
       e.stun = decay(e.stun || 0); held.remaining = decay(held.remaining);
       if (!held.remaining) {
         releaseHold(e);
-        e.flight = { from: { x: e.x, z: e.z }, to: throwDestination(e, held.face, caster.cfg.throwRange), elapsed: 0, duration: caster.cfg.throwTime, height: 3, landingStun: 1 };
+        e.flight = { from: { x: e.x, z: e.z }, to: throwDestination(e, held.face, caster.cfg.throwRange), elapsed: 0, duration: caster.cfg.throwTime, height: 3, landingStun: 1, impact: { source: caster.id, damage: caster.cfg.qDmg } };
         fx(caster, 'throw');
       }
       return true;
@@ -419,6 +419,11 @@ function createMatch(solo = false) {
     e.stun = decay(e.stun || 0); updateBush(e);
     if (t >= 1 - 1e-8) {
       e.flight = null; e.air = 0; pushOut(e); updateBush(e);
+      if (flight.impact) {
+        const caster = players[flight.impact.source];
+        if (!caster || hit(caster, e, flight.impact.damage) <= 0) return true;
+        fx(e, 'throwImpact');
+      }
       if (flight.landingStun) stun(e, flight.landingStun);
     }
     return true;

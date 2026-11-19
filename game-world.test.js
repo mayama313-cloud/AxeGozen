@@ -76,18 +76,19 @@ test('Darius charge rejects distant and protected endpoints, stops at walls and 
   b.send('q', aim(p)); assert.equal(p.charge, null); assert.equal(p.stun, 0.8);
 });
 
-test('Darius Q holds, throws and only starts the one second stun when the victim lands', () => {
+test('Darius Q holds and throws without damage, then deals fifty and stuns at wall impact', () => {
   const { match, a, b, p, q } = setup(false, ['darius', 'alex']);
   place(p, 0, 0); place(q, 2, 0); a.send('q', aim(q));
-  assert.equal(p.qCd, 10); assert.equal(q.hp, 150); assert.equal(p.grabbing, q.id); assert.ok(q.held);
+  assert.equal(p.qCd, 10); assert.equal(q.hp, 200); assert.equal(p.grabbing, q.id); assert.ok(q.held);
   b.send('move', { x: -10, z: 0 }); b.send('q', aim(p)); b.send('recall');
   assert.equal(q.dest, null); assert.equal(q.qCd, 0); assert.equal(q.recall, 0);
   ticks(match, 17); assert.ok(q.held); assert.ok(q.air > 0); assert.equal(q.stun, 0);
   match.tick(); assert.equal(q.held, null); assert.equal(p.grabbing, null); assert.ok(q.flight);
-  ticks(match, 7); assert.ok(q.air > 2); assert.equal(q.stun, 0);
+  ticks(match, 7); assert.ok(q.air > 2); assert.equal(q.stun, 0); assert.equal(q.hp, 200);
   ticks(match, 8); assert.equal(q.flight, null); assert.equal(q.air, 0); assert.equal(q.stun, 1); assert.ok(q.x > 4);
+  assert.equal(q.hp, 150); assert.equal(a.events.fx.kind, 'throwImpact');
   b.send('move', { x: -10, z: 0 }); assert.equal(q.dest, null);
-  ticks(match, 30); assert.equal(q.stun, 0);
+  ticks(match, 30); assert.equal(q.stun, 0); assert.equal(q.hp, 150);
 });
 
 test('Darius C deals twenty, lifts vertically and applies two seconds plus the victim passive', () => {
@@ -101,14 +102,27 @@ test('Darius C deals twenty, lifts vertically and applies two seconds plus the v
   ticks(match, 57); assert.equal(q.stun, 0);
 });
 
-test('Darius releases a held enemy on death and never holds a lethally damaged target', () => {
+test('Darius releases a held enemy without damage on death, and lethal Q damage occurs only at impact', () => {
   const { match, a, p, q, towers } = setup(false, ['darius', 'alex']);
   place(p, 0, 0); place(q, 2, 0); a.send('q', aim(q)); p.hp = 1;
   const tower = towers['t1-0']; place(tower, -3, 0); tower.atkCd = 0;
-  match.tick(); assert.equal(p.dead, true); assert.equal(q.held, null); assert.equal(p.grabbing, null);
+  match.tick(); assert.equal(p.dead, true); assert.equal(q.held, null); assert.equal(p.grabbing, null); assert.equal(q.hp, 200);
   p.dead = false; p.hp = 300; p.stun = 0; p.qCd = 0; tower.atkCd = 1000;
   place(q, 2, 0); q.hp = 20; a.send('q', aim(q));
+  assert.equal(q.dead, false); assert.equal(q.hp, 20); assert.ok(q.held);
+  ticks(match, 32); assert.equal(q.dead, false); assert.equal(q.hp, 20);
+  match.tick();
   assert.equal(q.dead, true); assert.equal(q.held, null); assert.equal(p.grabbing, null);
+  assert.equal(p.kills, 1); assert.equal(a.killEvents.at(-1).attacker.id, p.id);
+});
+
+test('Darius Q deals its damage once on ground landing when there is no wall', () => {
+  const { match, a, p, q } = setup(false, ['darius', 'alex']);
+  place(p, 0, 0); place(q, 0, 2); a.send('q', aim(q));
+  assert.equal(a.events.hit, undefined);
+  ticks(match, 32); assert.equal(q.hp, 200);
+  match.tick(); assert.equal(q.hp, 150); assert.equal(q.stun, 1); assert.ok(q.z > 7);
+  ticks(match, 30); assert.equal(q.hp, 150);
 });
 
 test('Darius can act again if a held summon expires before it is thrown', () => {

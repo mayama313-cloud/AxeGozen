@@ -66,8 +66,7 @@ test('Lucia warp checks the safe zone at the destination rather than along a non
 test('five Alex minions attack a large monster from outside its body without overlapping', () => {
   const { match, a, p, robots } = setup(true);
   place(p, 0, 7);
-  a.send('c', { x: 0, z: 3 }); p.cCd = 0;
-  a.send('c', { x: 0, z: 3 });
+  for (let i = 0; i < 5; i++) { p.cCd = 0; a.send('c', { x: 0, z: 3 }); }
   place(p, MAP.spawns[0].x, MAP.spawns[0].z);
   const monster = match.state.monsters['monster-0'] = {
     id: 'monster-0', monster: true, large: true, slot: 2, x: 0, z: 3,
@@ -81,7 +80,7 @@ test('five Alex minions attack a large monster from outside its body without ove
     assert.equal(minion.target, monster.id);
     assert.ok(Math.hypot(minion.x - monster.x, minion.z - monster.z) >= minion.radius + monster.radius);
   }
-  assertAlexSeparated(match);
+  assertSummonsSeparated(match);
 });
 
 test('Alex minions wait before retrying an unreachable route and can recover when it opens', () => {
@@ -157,7 +156,7 @@ test('summoned C unit acquires and damages an enemy tower without a player targe
   const t = towers['t1-2'];
   place(p, t.x - 4, t.z + 4); p.face = Math.atan2(t.x - p.x, t.z - p.z);
   a.send('c');
-  assert.equal(Object.keys(robots).length, 3);
+  assert.equal(Object.keys(robots).length, 1);
   ticks(match, TICK * 2);
   assert.ok(t.hp < CFG.tower.hp);
   assert.equal(Object.values(robots)[0].target, t.id);
@@ -311,15 +310,20 @@ test('recall cancels on movement, attacks, skills, damage and another B press', 
   }
 });
 
-test('C summons three at once, fills only remaining capacity and caps each owner at five', () => {
-  const { a, b, p, q, robots } = setup();
-  a.send('c'); assert.equal(Object.keys(robots).length, 3);
-  a.send('c'); assert.equal(Object.keys(robots).length, 3);
-  p.cCd = 0; a.send('c'); assert.equal(Object.keys(robots).length, 5);
-  p.cCd = 0; a.send('c'); assert.equal(Object.keys(robots).length, 5); assert.equal(p.cCd, 0);
-  b.send('c'); assert.equal(Object.values(robots).filter(r => r.owner === q.id).length, 3);
-  delete robots[Object.values(robots).find(r => r.owner === p.id).id];
-  a.send('c'); assert.equal(Object.values(robots).filter(r => r.owner === p.id).length, 5);
+test('Alex summons one assault unit and Bastion summons three guardians, up to five per owner', () => {
+  for (const [character, batch, hp, dmg, speed] of [['alex',1,80,10,8], ['bastion',3,100,4,4]]) {
+    const { a, p, robots } = setup(true, [character]);
+    a.send('c'); assert.equal(Object.keys(robots).length, batch);
+    a.send('c'); assert.equal(Object.keys(robots).length, batch);
+    for (const r of Object.values(robots)) {
+      assert.equal(r.hp, hp); assert.equal(r.maxHp, hp); assert.equal(r.cfg.dmg, dmg); assert.equal(r.cfg.speed, speed);
+    }
+    for (let i=0; i<5; i++) { p.cCd=0; a.send('c'); }
+    assert.equal(Object.keys(robots).length,5);
+    p.cCd=0; a.send('c'); assert.equal(Object.keys(robots).length,5); assert.equal(p.cCd,0);
+    delete robots[Object.keys(robots)[0]];
+    a.send('c'); assert.equal(Object.keys(robots).length,5);
+  }
 });
 
 test('Q stuns for 0.3 seconds, interrupts dash and recall, and blocks all actions until recovery', () => {
@@ -395,11 +399,11 @@ test('Alex summoned units inherit the passive exactly once, with red effect meta
   for (const other of Object.values(robots).slice(1)) delete robots[other.id];
   const tower = towers['t1-2']; place(r, tower.x - 2, tower.z); place(p, tower.x - 5, tower.z);
   match.tick();
-  assert.equal(tower.hp, CFG.tower.hp - 10);
+  assert.equal(tower.hp, CFG.tower.hp - 20);
   assert.equal(a.events.fx.id, r.id); assert.equal(a.events.fx.boosted, true);
-  assert.equal(a.events.hit.dmg, 10);
+  assert.equal(a.events.hit.dmg, 20);
   place(r, 0, 0); place(q, 1, 0); r.atkCd = 0; r.target = q.id; match.tick();
-  assert.equal(q.hp, CFG.maxHp - 5); assert.equal(a.events.fx.boosted, false);
+  assert.equal(q.hp, CFG.maxHp - 10); assert.equal(a.events.fx.boosted, false);
 });
 
 test('each additional character has active skills and a working passive', () => {
@@ -434,19 +438,48 @@ test('Bastion guard halves incoming damage for two seconds and expires', () => {
   p.qCd = 0; a.send('q', aim(q)); assert.equal(q.hp, 280 - 11.5 - 23);
 });
 
-function assertAlexSeparated(match) {
-  const live = [...Object.values(match.state.players), ...Object.values(match.state.robots)].filter(e => !e.dead);
-  for (const a of live.filter(e => e.owner !== undefined && e.character === 'alex')) for (const b of live) {
+function assertSummonsSeparated(match) {
+  const live = [...Object.values(match.state.players), ...Object.values(match.state.robots), ...Object.values(match.state.monsters)].filter(e => !e.dead);
+  for (const a of live.filter(e => e.owner !== undefined && ['alex', 'bastion'].includes(e.character))) for (const b of live) {
     if (a === b) continue;
     assert.ok(Math.hypot(a.x - b.x, a.z - b.z) >= a.radius + b.radius - 0.0001, `${a.id} overlaps ${b.id}`);
   }
 }
 
+test('Bastion guardians avoid players, assault units, other guardians and monsters throughout combat', () => {
+  const { match, a, b, p, q, robots } = setup(false, ['bastion', 'alex']);
+  place(p, 0, 5); place(q, 0, -5);
+  a.send('c', aim(q));
+  for (let i = 0; i < 5; i++) { q.cCd = 0; b.send('c', aim(p)); }
+  const monster = match.state.monsters['monster-0'] = {
+    id: 'monster-0', monster: true, large: true, slot: 2, x: 2, z: 0,
+    radius: 1.5, maxHp: 10000, hp: 10000, face: 0, dead: false, moving: false, bush: -1,
+  };
+  assertSummonsSeparated(match);
+  for (let i = 0; i < TICK * 6; i++) { match.tick(); assertSummonsSeparated(match); }
+  assert.ok(monster.hp < monster.maxHp, 'guardians must still be able to approach and attack a large monster');
+  assert.ok(Object.values(robots).some(r => r.character === 'bastion'));
+  assert.deepEqual(aim(p), { x: 0, z: 5 });
+});
+
+test('stunned guardians separate from coincident units at the map edge without moving players', () => {
+  const { match, a, p, q, robots } = setup(false, ['bastion', 'alex']);
+  place(p, 28.5, 0); place(q, 27, -2); a.send('c'); p.cCd = 0; a.send('c');
+  for (const r of Object.values(robots)) { place(r, 29, 0); r.stun = 1; }
+  const before = [aim(p), aim(q)];
+  match.tick(); assertSummonsSeparated(match);
+  assert.deepEqual([aim(p), aim(q)], before);
+  for (const r of Object.values(robots)) {
+    assert.ok(Math.abs(r.x) <= MAP.half - 1 && Math.abs(r.z) <= MAP.half - 1);
+    for (const o of MAP.obst) assert.ok(Math.hypot(r.x-o.x,r.z-o.z) >= r.radius+o.r-1e-4);
+  }
+});
+
 test('Alex minions do not overlap at summoning, when refilling to five, or while marching', () => {
   const { match, a, p } = setup(true);
-  a.send('c'); p.cCd = 0; a.send('c');
-  assert.equal(Object.keys(match.state.robots).length, 5); assertAlexSeparated(match);
-  for (let i = 0; i < TICK * 12; i++) { match.tick(); assertAlexSeparated(match); }
+  for (let i = 0; i < 5; i++) { p.cCd = 0; a.send('c'); }
+  assert.equal(Object.keys(match.state.robots).length, 5); assertSummonsSeparated(match);
+  for (let i = 0; i < TICK * 12; i++) { match.tick(); assertSummonsSeparated(match); }
 });
 
 test('Alex minions march from either spawn around friendly towers to attack enemy towers even while their owner is dead', () => {
@@ -454,7 +487,7 @@ test('Alex minions march from either spawn around friendly towers to attack enem
     const { match, a, b, p, q, robots, towers } = setup();
     const owner = slot ? q : p, sock = slot ? b : a;
     sock.send('c'); owner.dead = true; owner.respawn = 100;
-    for (let i = 0; i < TICK * 14; i++) { match.tick(); assertAlexSeparated(match); }
+    for (let i = 0; i < TICK * 14; i++) { match.tick(); assertSummonsSeparated(match); }
     assert.ok(Object.values(towers).some(t => t.slot !== slot && t.hp < CFG.tower.hp), `slot ${slot} never reached a tower: ${JSON.stringify(Object.values(robots).map(r => ({ x: r.x, z: r.z, goal: r.objective })))}`);
     for (const r of Object.values(robots)) assert.ok(Math.hypot(r.x - MAP.spawns[slot].x, r.z - MAP.spawns[slot].z) > 40);
   }
@@ -476,11 +509,11 @@ test('Alex minions fight encountered enemies and then resume marching, choosing 
 test('Alex separation handles coincident units, other characters, players and map edges without moving players', () => {
   const { match, a, p, q, robots } = setup();
   place(p, -28.9, 28.9); place(q, -28.9, 28.9);
-  a.send('c'); p.cCd = 0; a.send('c');
+  for (let i = 0; i < 5; i++) { p.cCd = 0; a.send('c'); }
   for (const r of Object.values(robots)) { place(r, -28.9, 28.9); r.stun = 1; }
   robots.mira = { id: 'mira', owner: q.id, character: 'mira', slot: 1, radius: 0.4, hp: 30, life: 20, x: -28, z: 28, face: 0, atkCd: 100, stun: 1, bush: -1 };
   const positions = [aim(p), aim(q), aim(robots.mira)];
-  match.tick(); assertAlexSeparated(match);
+  match.tick(); assertSummonsSeparated(match);
   assert.deepEqual([aim(p), aim(q), aim(robots.mira)], positions);
   for (const r of Object.values(robots)) assert.ok(Math.abs(r.x) <= MAP.half - 1 && Math.abs(r.z) <= MAP.half - 1);
 });
@@ -505,7 +538,7 @@ test('Alex minions summoned against an obstacle can leave its edge and continue 
   place(p, -24, 0); p.face = Math.PI / 2; a.send('c');
   const starts = new Map(Object.values(robots).map(r => [r.id, aim(r)]));
   ticks(match, TICK * 2);
-  assertAlexSeparated(match);
+  assertSummonsSeparated(match);
   for (const r of Object.values(robots)) {
     const start = starts.get(r.id);
     assert.ok(Math.hypot(r.x - start.x, r.z - start.z) > 1, `${r.id} stuck at an obstacle`);
@@ -515,8 +548,8 @@ test('Alex minions summoned against an obstacle can leave its edge and continue 
 
 test('opposing full waves remain separated while meeting and fighting', () => {
   const { match, a, b, p, q } = setup();
-  a.send('c'); p.cCd = 0; a.send('c'); b.send('c'); q.cCd = 0; b.send('c');
-  for (let i = 0; i < TICK * 14; i++) { match.tick(); assertAlexSeparated(match); }
+  for (let i = 0; i < 5; i++) { p.cCd = 0; a.send('c'); } for (let i = 0; i < 5; i++) { q.cCd = 0; b.send('c'); }
+  for (let i = 0; i < TICK * 14; i++) { match.tick(); assertSummonsSeparated(match); }
 });
 
 test('Alex minions slide out of overlap when pressed directly against a wall', () => {
@@ -524,7 +557,7 @@ test('Alex minions slide out of overlap when pressed directly against a wall', (
   a.send('c'); const r = Object.values(robots)[0];
   for (const other of Object.values(robots).slice(1)) delete robots[other.id];
   place(p, 28.5, 0); place(r, 29, 0); r.stun = 1;
-  match.tick(); assertAlexSeparated(match);
+  match.tick(); assertSummonsSeparated(match);
   assert.deepEqual(aim(p), { x: 28.5, z: 0 });
   assert.ok(Math.abs(r.x) <= MAP.half - 1 && Math.abs(r.z) <= MAP.half - 1);
 });

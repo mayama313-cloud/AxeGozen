@@ -18,15 +18,15 @@ const R = CFG.robot;
 const CHARACTERS = [
   { id: 'alex', name: 'アレックス', role: 'タワー攻略', color: '#ee675d',
     passive: '攻城の血脈：自身と自身の召喚ユニットが、敵タワー・召喚ユニットに与えるダメージが2倍。適用時の攻撃は赤く発光。',
-    skills: { q: { name: 'クレセント', text: '前方を23ダメージで斬り、0.3秒スタン。' }, e: { name: 'ラッシュ', text: 'E長押しで照準、キーを離すか左クリックで射程8の着地点を確定。着地後に近くの敵1体へ45ダメージ・1秒スタン。CD30秒。右クリック・Escで照準解除。' }, c: { name: 'アサルト部隊', text: 'ミニオンを3体召喚。最大5体。他のユニットを避けて敵タワーへ進軍し、途中の敵と戦う。' } }, stats: { eCd: 30, qDmg: 23, leapDmg: 45 }, robot: {} },
+    skills: { q: { name: 'クレセント', text: '前方を23ダメージで斬り、0.3秒スタン。' }, e: { name: 'ラッシュ', text: 'E長押しで照準、キーを離すか左クリックで射程8の着地点を確定。着地後に近くの敵1体へ45ダメージ・1秒スタン。CD30秒。右クリック・Escで照準解除。' }, c: { name: 'アサルト部隊', text: 'HP80・攻撃力10・速度8のミニオンを1体召喚。最大5体。他のユニットを避けて敵タワーへ進軍し、途中の敵と戦う。' } }, stats: { eCd: 30, qDmg: 23, leapDmg: 45 }, robot: { hp: 80, dmg: 10, speed: 8, batch: 1 } },
   { id: 'mira', name: 'ミラ', role: '機動力・遠めの範囲攻撃', color: '#7ddbd3',
     passive: '風の足取り：移動速度が9から11に上昇。',
     skills: { q: { name: 'フロストファン', text: '射程14の扇形に22ダメージ、2秒スタン。' }, e: { name: 'ウィンドステップ', text: '3秒間、移動速度が2倍（11→22）。CD10秒。' }, c: { name: 'マジックスカウト', text: 'カーソル方向へ射程14の高速魔法を放つ。最初に当たった敵ユニットに30ダメージ、最大6引き寄せ、1.5秒スタン。CD8秒。' } },
     stats: { atkRange: 8, speed: 11, qRange: 14, qArc: Math.PI / 5, qDmg: 22, qStun: 2, qCd: 6, eCd: 10 }, robot: {} },
   { id: 'bastion', name: 'バスティオン', role: '耐久・防衛', color: '#e8bc65',
     passive: '不屈の体：最大HPが200から280に上昇。',
-    skills: { q: { name: 'グラウンドブレイク', text: '周囲3.5の敵に20ダメージ、0.5秒スタン。' }, e: { name: 'アイアンガード', text: '2秒間、受けるダメージを50%軽減。クールダウン6秒。' }, c: { name: 'ガーディアン部隊', text: 'HP70・速度5・攻撃力4の守護ユニットを3体召喚。最大5体。' } },
-    stats: { maxHp: 280, speed: 8.5, qRange: 3.5, qArc: Math.PI, qDmg: 20, qStun: 0.5, qCd: 7, eCd: 6, cCd: 10 }, robot: { hp: 70, dmg: 4, speed: 5 } },
+    skills: { q: { name: 'グラウンドブレイク', text: '周囲3.5の敵に20ダメージ、0.5秒スタン。' }, e: { name: 'アイアンガード', text: '2秒間、受けるダメージを50%軽減。クールダウン6秒。' }, c: { name: 'ガーディアン部隊', text: 'HP100・攻撃力4・速度4の守護ユニットを3体召喚。最大5体。他のユニットを避けながら追従・戦闘する。' } },
+    stats: { maxHp: 280, speed: 8.5, qRange: 3.5, qArc: Math.PI, qDmg: 20, qStun: 0.5, qCd: 7, eCd: 6, cCd: 10 }, robot: { hp: 100, dmg: 4, speed: 4, batch: 3 } },
   { id: 'lucia', name: 'ルシア', role: '悪魔・吸収・奇襲', color: '#c58cff',
     passive: '悪魔の渇望：敵キャラクターに実際に与えたダメージの10%をHPとして回復。',
     skills: { q: { name: '禍球', text: '射程12の禍々しい球を放ち、最初に当たった敵ユニットに50ダメージ。命中時に自身のHPを30回復。CD6秒。' }, e: { name: '魔影転移', text: '指定地点へ1秒間姿を消してからワープし、半径3に40ダメージ。射程8、CD12秒。' }, c: { name: '闇の帳', text: '5秒間、敵から見えなくなる。攻撃しても解除されない。CD20秒。' } },
@@ -83,6 +83,7 @@ function createMatch(solo = false) {
   const targets = () => [...units(), ...Object.values(towers)];
   const unit = id => players[id] || robots[id] || towers[id] || monsters[id];
   const isAlexMinion = e => isRobot(e) && (e.character || players[e.owner]?.character) === 'alex';
+  const isSolidSummon = e => isRobot(e) && ['alex', 'bastion'].includes(e.character || players[e.owner]?.character);
   const destroyed = slot => Object.values(towers).filter(t => t.slot === slot && t.dead).length;
   const updateBush = e => { e.bush = BUSHES.findIndex(b => dist(e, b) < b.r); };
   function canSee(slot, e) {
@@ -109,14 +110,14 @@ function createMatch(solo = false) {
   function pushOut(e) {
     // 障害物と生存タワーは通り抜けられない。
     for (const o of [...OBST, ...Object.values(towers).filter(t => !t.dead).map(t => ({ ...t, r: t.radius }))]) {
-      const d = dist(e, o), min = o.r + e.radius + (isAlexMinion(e) ? 0.05 : 0);
+      const d = dist(e, o), min = o.r + e.radius + (isRobot(e) ? 0.05 : 0);
       if (d < min) {
         e.x = o.x + (d ? (e.x - o.x) / d : 1) * min;
         e.z = o.z + (d ? (e.z - o.z) / d : 0) * min;
       }
     }
     if (e.monster) { e.x = clamp(e.x); e.z = clamp(e.z); return; }
-    const s = SPAWNS[1 - e.slot], d = dist(e, s), min = CFG.safeRadius + e.radius + (isAlexMinion(e) ? 0.05 : 0.01);
+    const s = SPAWNS[1 - e.slot], d = dist(e, s), min = CFG.safeRadius + e.radius + (isRobot(e) ? 0.05 : 0.01);
     if (d < min) {
       const fallback = SPAWNS[e.slot];
       const dx = d ? (e.x - s.x) / d : (fallback.x - s.x) / dist(fallback, s);
@@ -125,7 +126,7 @@ function createMatch(solo = false) {
     }
     e.x = clamp(e.x); e.z = clamp(e.z);
   }
-  function separateAlexMinions() {
+  function separateSummons() {
     const live = units().filter(e => !e.dead);
     function slideApart(mover, anchor, min) {
       const heading = ang(anchor, mover);
@@ -141,11 +142,11 @@ function createMatch(solo = false) {
       }
       if (fallback) { mover.x = fallback.x; mover.z = fallback.z; }
     }
-    // プレイヤーや他キャラのユニットは押さず、アレックスのミニオン側で避ける。
+    // プレイヤーやモンスターは押さず、召喚ユニット側で避ける。
     for (let pass = 0; pass < 24; pass++) {
       let overlap = false;
       for (let i = 0; i < live.length; i++) for (let j = i + 1; j < live.length; j++) {
-        const a = live[i], b = live[j], moveA = isAlexMinion(a), moveB = isAlexMinion(b);
+        const a = live[i], b = live[j], moveA = isSolidSummon(a), moveB = isSolidSummon(b);
         if (!moveA && !moveB) continue;
         const d = dist(a, b), min = a.radius + b.radius + 0.04;
         if (d >= min - 0.0001) continue;
@@ -166,10 +167,10 @@ function createMatch(solo = false) {
         }
         overlap = true;
       }
-      for (const e of live) if (isAlexMinion(e)) pushOut(e);
+      for (const e of live) if (isSolidSummon(e)) pushOut(e);
       if (!overlap) break;
     }
-    for (const e of live) if (isAlexMinion(e)) updateBush(e);
+    for (const e of live) if (isSolidSummon(e)) updateBush(e);
   }
   function navigationBlocks(r) {
     return [...OBST, ...Object.values(towers).filter(t => !t.dead).map(t => ({ x: t.x, z: t.z, r: t.radius })),
@@ -517,13 +518,14 @@ function createMatch(solo = false) {
       p.recall = 0;
       if (isNum(d?.x, d?.z) && dist(p, d) > 0.01) p.face = ang(p, d);
       p.cCd = p.cfg.cCd;
-      for (let i = 0; i < Math.min(R.batch, R.max - count); i++) {
-        const a = p.face + (i - 1) * 0.6, id = 'r' + (++robotSeq);
+      const amount = Math.min(R.batch, R.max - count);
+      for (let i = 0; i < amount; i++) {
+        const a = p.face + (i - (amount - 1) / 2) * 0.6, id = 'r' + (++robotSeq);
         const r = robots[id] = { id, owner: p.id, slot, character: p.character, cfg: R, radius: R.radius, hp: R.hp, maxHp: R.hp, life: R.life, dead: false, stun: 0,
           x: clamp(p.x + Math.sin(a) * 1.6), z: clamp(p.z + Math.cos(a) * 1.6), face: p.face, atkCd: 0, target: null, moving: false };
         pushOut(r); updateBush(r);
       }
-      separateAlexMinions();
+      separateSummons();
       fx(p, 'summon');
     });
     socket.on('restart', () => { if (solo && (active() || phase === 'finished')) { reset(); phase = 'playing'; } });
@@ -570,17 +572,7 @@ function createMatch(solo = false) {
     } else if (!marching && !owner.dead && dist(r, owner) > 4) goal = owner;
     r.moving = false;
     if (goal) {
-      if (marching) {
-        march(r, goal, reach(R.atkRange, goal), R.speed);
-        pushOut(r); updateBush(r);
-        return;
-      }
-      const d = dist(r, goal), step = Math.min(R.speed * DT, d);
-      if (d > 0.05) {
-        r.face = ang(r, goal);
-        r.x += (goal.x - r.x) / d * step; r.z += (goal.z - r.z) / d * step;
-        r.moving = true;
-      }
+      march(r, goal, foe ? reach(R.atkRange, goal) : 4, R.speed);
     }
     pushOut(r); updateBush(r);
   }
@@ -670,7 +662,6 @@ function createMatch(solo = false) {
         const step = Math.min(d, DT * (m.large ? 3 : 4));
         m.x += (goal.x-m.x)/d*step; m.z += (goal.z-m.z)/d*step; m.moving = true; pushOut(m); updateBush(m);
       }
-      if (!foe) m.hp = Math.min(m.maxHp, m.hp + DT * 10);
     }
     energyTimer = decay(energyTimer);
     if (!energyTimer) {
@@ -692,11 +683,11 @@ function createMatch(solo = false) {
     if (active()) {
       elapsed += DT;
       tickEnvironment();
-      separateAlexMinions();
+      separateSummons();
       for (const p of Object.values(players)) if (active()) tickPlayer(p);
       for (const r of Object.values(robots)) if (active()) tickRobot(r);
       for (const bolt of Object.values(projectiles)) if (active()) tickProjectile(bolt);
-      separateAlexMinions();
+      separateSummons();
       for (const t of Object.values(towers)) if (active()) tickTower(t);
     }
     const list = Object.values(players);

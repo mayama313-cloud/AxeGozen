@@ -27,6 +27,100 @@ const ticks = (match, n) => { for (let i = 0; i < n; i++) match.tick(); };
 const aim = e => ({ x: e.x, z: e.z });
 function place(e, x, z) { Object.assign(e, { x, z, dest: null, target: null, bush: -1 }); }
 
+test('Lucia is invulnerable to zone damage, area damage and projectiles only while vanishing for E', () => {
+  const { match, a, b, p, q } = setup(false, ['lucia', 'mira']);
+  match.state.environment.enabled = true;
+  place(p, 4, 0); place(q, 0, 0); p.hp = 100;
+  a.send('dash', { x: 4, z: 1 });
+  b.send('q', aim(p)); b.send('c', aim(p));
+  assert.equal(p.hp, 100); assert.equal(p.stun, 0);
+  ticks(match, 29); assert.equal(p.hp, 100); assert.ok(p.warp);
+  match.tick(); assert.equal(p.warp, null); assert.equal(p.hp, 100);
+  match.tick(); assert.ok(Math.abs(p.hp - 99.6) < 1e-8);
+});
+
+test('Darius has a large body, 300 HP, slow close-range 15 damage attacks and an extra half second of stun', () => {
+  const { match, a, b, p, q } = setup(false, ['darius', 'alex']);
+  assert.equal(p.hp, 300); assert.ok(p.radius > q.radius);
+  place(p, 0, 0); place(q, 2.1, 0); a.send('chase', { id: q.id });
+  match.tick(); assert.equal(q.hp, 200);
+  match.tick(); assert.equal(q.hp, 185);
+  ticks(match, 45); assert.equal(q.hp, 185);
+  ticks(match, 5); assert.equal(q.hp, 170);
+  p.target = null; b.send('q', aim(p)); assert.equal(p.stun, 0.8);
+  ticks(match, 3); q.qCd = 0; b.send('q', aim(p)); assert.equal(p.stun, 0.8);
+});
+
+test('Darius charge reaches a selected point within twenty, hits each enemy once and locks other actions', () => {
+  const { match, a, p, q, robots } = setup(false, ['darius', 'mira']);
+  place(p, -2, 2); place(q, 3, 7);
+  robots.guard = { id: 'guard', owner: q.id, character: 'bastion', slot: 1, x: 6, z: 10, radius: 0.4,
+    hp: 100, maxHp: 100, life: 20, cfg: { ...CFG.robot, speed: 0 }, atkCd: 100, stun: 0, bush: -1 };
+  a.send('dash', { x: 12, z: 16 }); assert.equal(p.eCd, 20); assert.ok(p.charge);
+  a.send('q', aim(q)); a.send('c', aim(q)); a.send('recall');
+  assert.equal(p.qCd, 0); assert.equal(p.cCd, 0); assert.equal(p.recall, 0);
+  while (q.hp === 200 && p.charge) match.tick();
+  assert.equal(q.hp, 160); assert.ok(q.stun > 0.9);
+  ticks(match, 35);
+  assert.equal(p.charge, null); assert.ok(Math.hypot(p.x-12,p.z-16) < 1e-8);
+  assert.equal(q.hp, 160); assert.equal(robots.guard.hp, 60);
+});
+
+test('Darius charge rejects distant and protected endpoints, stops at walls and can be interrupted', () => {
+  const { match, a, b, p, q } = setup(false, ['darius', 'alex']);
+  place(p, 0, 0); a.send('dash', { x: 21, z: 0 }); assert.equal(p.eCd, 0);
+  place(p, 20, -20); a.send('dash', MAP.spawns[1]); assert.equal(p.eCd, 0);
+  place(p, -8, -5); a.send('dash', { x: -8, z: 5 }); ticks(match, 15);
+  assert.equal(p.charge, null); assert.ok(p.z < -3);
+  place(p, 0, 0); place(q, 1, 0); p.eCd = 0; a.send('dash', { x: 0, z: 10 });
+  b.send('q', aim(p)); assert.equal(p.charge, null); assert.equal(p.stun, 0.8);
+});
+
+test('Darius Q holds, throws and only starts the one second stun when the victim lands', () => {
+  const { match, a, b, p, q } = setup(false, ['darius', 'alex']);
+  place(p, 0, 0); place(q, 2, 0); a.send('q', aim(q));
+  assert.equal(p.qCd, 10); assert.equal(q.hp, 150); assert.equal(p.grabbing, q.id); assert.ok(q.held);
+  b.send('move', { x: -10, z: 0 }); b.send('q', aim(p)); b.send('recall');
+  assert.equal(q.dest, null); assert.equal(q.qCd, 0); assert.equal(q.recall, 0);
+  ticks(match, 17); assert.ok(q.held); assert.ok(q.air > 0); assert.equal(q.stun, 0);
+  match.tick(); assert.equal(q.held, null); assert.equal(p.grabbing, null); assert.ok(q.flight);
+  ticks(match, 7); assert.ok(q.air > 2); assert.equal(q.stun, 0);
+  ticks(match, 8); assert.equal(q.flight, null); assert.equal(q.air, 0); assert.equal(q.stun, 1); assert.ok(q.x > 4);
+  b.send('move', { x: -10, z: 0 }); assert.equal(q.dest, null);
+  ticks(match, 30); assert.equal(q.stun, 0);
+});
+
+test('Darius C deals twenty, lifts vertically and applies two seconds plus the victim passive', () => {
+  const { match, a, b, p, q, robots } = setup(false, ['darius', 'darius']);
+  place(p, 0, 0); place(q, 2, 0); a.send('c', aim(q));
+  assert.equal(p.cCd, 5); assert.equal(q.hp, 280); assert.equal(q.stun, 2.5); assert.ok(q.flight);
+  assert.equal(Object.keys(robots).length, 0);
+  b.send('dash', { x: 10, z: 0 }); assert.equal(q.eCd, 0);
+  ticks(match, 9); assert.ok(q.air > 2.9); assert.deepEqual(aim(q), { x: 2, z: 0 });
+  ticks(match, 9); assert.equal(q.flight, null); assert.equal(q.air, 0); assert.ok(Math.abs(q.stun-1.9)<1e-8);
+  ticks(match, 57); assert.equal(q.stun, 0);
+});
+
+test('Darius releases a held enemy on death and never holds a lethally damaged target', () => {
+  const { match, a, p, q, towers } = setup(false, ['darius', 'alex']);
+  place(p, 0, 0); place(q, 2, 0); a.send('q', aim(q)); p.hp = 1;
+  const tower = towers['t1-0']; place(tower, -3, 0); tower.atkCd = 0;
+  match.tick(); assert.equal(p.dead, true); assert.equal(q.held, null); assert.equal(p.grabbing, null);
+  p.dead = false; p.hp = 300; p.stun = 0; p.qCd = 0; tower.atkCd = 1000;
+  place(q, 2, 0); q.hp = 20; a.send('q', aim(q));
+  assert.equal(q.dead, true); assert.equal(q.held, null); assert.equal(p.grabbing, null);
+});
+
+test('Darius can act again if a held summon expires before it is thrown', () => {
+  const { match, a, p, q, robots } = setup(false, ['darius', 'alex']);
+  place(p, 0, 0);
+  robots.expiring = { id: 'expiring', owner: q.id, character: 'alex', slot: 1, x: 1.5, z: 0, radius: 0.4,
+    hp: 80, maxHp: 80, life: 0.01, cfg: configFor('alex').robot, atkCd: 100, stun: 0, bush: -1 };
+  a.send('q', { x: 1.5, z: 0 }); assert.equal(p.grabbing, 'expiring');
+  match.tick(); assert.equal(robots.expiring, undefined); assert.equal(p.grabbing, null);
+  a.send('recall'); assert.equal(p.recall, CFG.recallTime);
+});
+
 test('Alex and Lucia can land in a gap exactly one body wide, but reject overlapping destinations', () => {
   for (const character of ['alex', 'lucia']) {
     const { match, a, p, towers } = setup(true, [character]);
@@ -753,7 +847,7 @@ test('Lucia E vanishes for one second, locks other actions and deals AoE only af
   assert.equal(q.hp, 160); assert.equal(robots.guard.hp, 60); assert.equal(p.hp, 104);
 });
 
-test('Lucia E rejects unsafe destinations and is interrupted by stun', () => {
+test('Lucia E rejects unsafe destinations and ignores attacks and stun while vanished', () => {
   const { match, a, b, p, q, towers } = setup(false, ['lucia', 'alex']); place(p, 0, 0); place(q, 1.5, 0);
   for (const d of [{ x: 20, z: 0 }, { x: -8, z: 0 }, { x: NaN, z: 0 }]) {
     a.send('dash', d); assert.equal(p.warp, null); assert.equal(p.eCd, 0);
@@ -761,7 +855,8 @@ test('Lucia E rejects unsafe destinations and is interrupted by stun', () => {
   const tower = towers['t1-2']; place(p, tower.x - 4, tower.z); a.send('dash', aim(tower)); assert.equal(p.warp, null);
   place(p, 20, -19.5); a.send('dash', { x: 24, z: -20 }); assert.equal(p.warp, null);
   place(p, 0, 0); a.send('dash', { x: 4, z: 0 }); match.tick(); b.send('q', aim(p));
-  assert.equal(p.warp, null); assert.equal(p.stun, 0.3); ticks(match, 30); assert.deepEqual(aim(p), { x: 0, z: 0 });
+  assert.ok(p.warp); assert.equal(p.stun, 0); assert.equal(p.hp, p.cfg.maxHp);
+  ticks(match, 29); assert.deepEqual(aim(p), { x: 4, z: 0 }); assert.equal(p.warp, null);
 });
 
 test('Lucia C hides coordinates for exactly five seconds and removes enemy chase and tower aggro', () => {

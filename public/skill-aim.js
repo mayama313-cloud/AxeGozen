@@ -6,14 +6,14 @@ function createSkillAim({ self, playing, point, validLeap, emit, changed = () =>
     if (current?.kind === 'leap') emit('cancelLeap');
     if (current) set(null);
   };
-  const usable = player => playing() && player && !player.dead && !(player.stun > 0) && !(player.air > 0) && !(player.warping > 0);
+  const usable = player => playing() && player && !player.dead && !(player.stun > 0) && !(player.air > 0) && !(player.warping > 0) && !player.charging && !player.grabbing && !player.grabbed && !player.flying;
   function begin(key) {
     if (current?.key === key && mode() === 'toggle') { cancel(); return true; }
     const player = self();
     if (!usable(player) || player[key + 'Cd'] > 0) return false;
     const kind = key === 'q' ? player.character === 'lucia' ? 'projectile' : 'cone'
-      : key === 'e' ? player.character === 'alex' ? 'leap' : player.character === 'lucia' ? 'warp' : null
-      : key === 'c' ? player.character === 'lucia' ? null : player.character === 'mira' ? 'projectile' : 'summon' : null;
+      : key === 'e' ? player.character === 'alex' ? 'leap' : player.character === 'lucia' ? 'warp' : player.character === 'darius' ? 'charge' : null
+      : key === 'c' ? player.character === 'lucia' ? null : player.character === 'darius' ? 'cone' : player.character === 'mira' ? 'projectile' : 'summon' : null;
     if (!kind) return false;
     cancel();
     set({ key, kind, character: player.character });
@@ -24,12 +24,12 @@ function createSkillAim({ self, playing, point, validLeap, emit, changed = () =>
     const player = self(), aim = current;
     if (!aim) return false;
     if (!usable(player) || player.character !== aim.character || player[aim.key + 'Cd'] > 0) { cancel(); return false; }
-    if (!Number.isFinite(target?.x) || !Number.isFinite(target?.z) || (['leap', 'warp'].includes(aim.kind) && !validLeap(target, player))) {
+    if (!Number.isFinite(target?.x) || !Number.isFinite(target?.z) || (['leap', 'warp', 'charge'].includes(aim.kind) && !validLeap(target, player))) {
       if (released) cancel();
       return false;
     }
     set(null);
-    emit(aim.kind === 'leap' ? 'leap' : aim.kind === 'warp' ? 'dash' : aim.key, target);
+    emit(aim.kind === 'leap' ? 'leap' : ['warp', 'charge'].includes(aim.kind) ? 'dash' : aim.key, target);
     return true;
   }
   function release(key) { if (mode() === 'toggle') return false; if (current?.key === key) return confirm(point(), true); return false; }

@@ -85,3 +85,14 @@ test('toggle aim ignores release, confirms by click, cancels on repeated key and
   aim.begin('e'); aim.release('e'); assert.equal(aim.current.kind,'leap');
   aim.begin('e'); assert.equal(aim.current,null); assert.equal(events.at(-1).event,'cancelLeap');
 });
+
+test('Darius aims all three attacks and cannot aim while charging, holding, held or thrown', () => {
+  const { aim, player, events } = setup('darius');
+  aim.begin('e'); assert.equal(aim.current.kind, 'charge'); aim.release('e');
+  assert.equal(events[0].event, 'dash');
+  for (const key of ['q','c']) { aim.begin(key); assert.equal(aim.current.kind,'cone'); aim.release(key); }
+  assert.deepEqual(events.map(e => e.event), ['dash','q','c']);
+  for (const flag of ['charging','grabbing','grabbed','flying']) {
+    player[flag] = true; assert.equal(aim.begin('q'),false); player[flag] = false;
+  }
+});

@@ -90,6 +90,12 @@
       case 'ui': tone(76, 0.07, 0.07 * v); break;
       case 'start': phrase([57, 64, 69, 76], 0.1); break;
       case 'atk': tone(75, 0.09, 0.1 * v, 'triangle', 0, effects, 48); noise(0.07, 0.07 * v, 2300); break;
+      case 'beastAtk': tone(39, 0.22, 0.18 * v, 'triangle', 0, effects, 24); noise(0.12, 0.11 * v, 600); break;
+      case 'charge': phrase([36, 40, 43, 48], 0.07, 0.12 * v, 'sawtooth'); noise(0.35, 0.15 * v, 750); break;
+      case 'chargeHit': tone(32, 0.2, 0.2 * v, 'triangle', 0, effects, 21); noise(0.15, 0.17 * v, 500); break;
+      case 'grab': tone(42, 0.3, 0.15 * v, 'sawtooth', 0, effects, 34); noise(0.12, 0.12 * v, 1100); break;
+      case 'throw': tone(48, 0.4, 0.13 * v, 'triangle', 0, effects, 82); noise(0.3, 0.1 * v, 2100); break;
+      case 'uppercut': tone(29, 0.16, 0.18 * v, 'sine', 0, effects, 45); tone(57, 0.28, 0.12 * v, 'square', 0.06, effects, 90); noise(0.2, 0.14 * v, 1500); break;
       case 'boosted': tone(52, 0.16, 0.15 * v, 'sawtooth', 0, effects, 35); noise(0.1, 0.11 * v, 900); break;
       case 'hit': tone(43, 0.09, 0.12 * v, 'triangle', 0, effects, 30); noise(0.055, 0.1 * v, 700); break;
       // 斬撃・氷・地響きを、音色とリズムの両方で区別する。
@@ -203,7 +209,7 @@
   for (const event of ['matchEnded', 'disconnect', 'connect_error']) session.on(event, () => { previous = null; setTheme('lobby'); });
   session.on('fx', d => {
     const source = entity(d.id), volume = d.id === myId ? 1 : distanceVolume(d);
-    if (d.kind === 'atk') sound(d.boosted ? 'boosted' : 'atk', volume * (previous?.robots.some(r => r.id === d.id) ? 0.45 : 0.75));
+    if (d.kind === 'atk') sound(d.boosted ? 'boosted' : source?.character === 'darius' ? 'beastAtk' : 'atk', volume * (previous?.robots.some(r => r.id === d.id) ? 0.45 : 0.75));
     else sound(d.kind, volume, d.character || source?.character);
   });
   session.on('hit', d => sound('hit', d.id === myId ? 0.9 : distanceVolume(entity(d.id)) * 0.45));

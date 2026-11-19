@@ -18,7 +18,7 @@ const R = CFG.robot;
 const CHARACTERS = [
   { id: 'alex', name: 'アレックス', role: 'タワー攻略', color: '#ee675d',
     passive: '攻城の血脈：自身と自身の召喚ユニットが、敵タワー・召喚ユニットに与えるダメージが2倍。適用時の攻撃は赤く発光。',
-    skills: { q: { name: 'クレセント', text: '前方を23ダメージで斬り、0.3秒スタン。' }, e: { name: 'ラッシュ', text: 'E長押しで照準、キーを離すか左クリックで射程8の着地点を確定。着地後に近くの敵1体へ45ダメージ・1秒スタン。CD30秒。右クリック・Escで照準解除。' }, c: { name: 'アサルト部隊', text: 'HP80・攻撃力10・速度8のミニオンを1体召喚。最大5体。他のユニットを避けて敵タワーへ進軍し、途中の敵と戦う。' } }, stats: { eCd: 30, qDmg: 23, leapDmg: 45 }, robot: { hp: 80, dmg: 10, speed: 8, batch: 1 } },
+    skills: { q: { name: 'クレセント', text: '前方を23ダメージで斬り、0.3秒スタン。' }, e: { name: 'ラッシュ', text: 'E長押しで照準、キーを離すか左クリックで射程10の着地点を確定。着地後に近くの敵1体へ45ダメージ・1秒スタン。CD30秒。右クリック・Escで照準解除。' }, c: { name: 'アサルト部隊', text: 'HP80・攻撃力10・速度8のミニオンを1体召喚。最大5体。他のユニットを避けて敵タワーへ進軍し、途中の敵と戦う。' } }, stats: { eCd: 30, qDmg: 23, leapDmg: 45, leapRange: 10 }, robot: { hp: 80, dmg: 10, speed: 8, batch: 1 } },
   { id: 'mira', name: 'ミラ', role: '機動力・遠めの範囲攻撃', color: '#7ddbd3',
     passive: '風の足取り：移動速度が9から11に上昇。',
     skills: { q: { name: 'フロストファン', text: '射程14の扇形に22ダメージ、2秒スタン。' }, e: { name: 'ウィンドステップ', text: '3秒間、移動速度が2倍（11→22）。CD10秒。' }, c: { name: 'マジックスカウト', text: 'カーソル方向へ射程14の高速魔法を放つ。最初に当たった敵ユニットに30ダメージ、最大6引き寄せ、1.5秒スタン。CD8秒。' } },
@@ -29,8 +29,12 @@ const CHARACTERS = [
     stats: { maxHp: 280, speed: 8.5, qRange: 3.5, qArc: Math.PI, qDmg: 20, qStun: 0.5, qCd: 7, eCd: 6, cCd: 10 }, robot: { hp: 100, dmg: 4, speed: 4, batch: 3 } },
   { id: 'lucia', name: 'ルシア', role: '悪魔・吸収・奇襲', color: '#c58cff',
     passive: '悪魔の渇望：敵キャラクターに実際に与えたダメージの10%をHPとして回復。',
-    skills: { q: { name: '禍球', text: '射程12の禍々しい球を放ち、最初に当たった敵ユニットに50ダメージ。命中時に自身のHPを30回復。CD6秒。' }, e: { name: '魔影転移', text: '指定地点へ1秒間姿を消してからワープし、半径3に40ダメージ。射程8、CD12秒。' }, c: { name: '闇の帳', text: '5秒間、敵から見えなくなる。攻撃しても解除されない。CD20秒。' } },
-    stats: { qRange: 12, qDmg: 50, qStun: 0, qCd: 6, qSpeed: 26, qRadius: 0.45, qHeal: 30, eCd: 12, cCd: 20, leapRange: 8, leapHitRange: 3, warpTime: 1, warpDmg: 40, lifeSteal: 0.1 }, robot: {} },
+    skills: { q: { name: '禍球', text: '射程12の禍々しい球を放ち、最初に当たった敵ユニットに50ダメージ。命中時に自身のHPを30回復。CD6秒。' }, e: { name: '魔影転移', text: '指定地点へ1秒間姿を消してからワープし、半径3に40ダメージ。消えている間は領域ダメージを含め無敵。射程12、CD12秒。' }, c: { name: '闇の帳', text: '5秒間、敵から見えなくなる。攻撃しても解除されない。CD20秒。' } },
+    stats: { qRange: 12, qDmg: 50, qStun: 0, qCd: 6, qSpeed: 26, qRadius: 0.45, qHeal: 30, eCd: 12, cCd: 20, leapRange: 12, leapHitRange: 3, warpTime: 1, warpDmg: 40, lifeSteal: 0.1 }, robot: {} },
+  { id: 'darius', name: 'ダリウス', role: '獣・突進・投げ', color: '#dc9255',
+    passive: '巨獣の体：最大HP300。受けるスタンが毎回0.5秒長くなる。通常攻撃は15ダメージの至近距離攻撃で、間隔は1.6秒。',
+    skills: { q: { name: '獣王の投擲', text: '近くの敵1体を掴んで50ダメージ。0.6秒拘束して前方へ投げ、着地後1秒スタン。CD10秒。' }, e: { name: '猪突猛進', text: '射程20の指定地点へ突進。接触した敵に40ダメージ・1秒スタン。壁に当たると停止。CD20秒。' }, c: { name: '猛牙の突き上げ', text: '近距離の敵1体に20ダメージ。真上に浮かせ、2秒スタン。CD5秒。' } },
+    stats: { maxHp: 300, radius: 1.05, speed: 8, atkDmg: 15, atkRange: 2, atkCd: 1.6, stunPenalty: 0.5, qRange: 2.2, qArc: Math.PI / 3, qDmg: 50, qCd: 10, qStun: 0, eCd: 20, cCd: 5, leapRange: 20, chargeSpeed: 25, chargeDmg: 40, chargeStun: 1, holdTime: 0.6, throwRange: 6, throwTime: 0.5, cRange: 2.2, cDmg: 20, cStun: 2, liftTime: 0.6 }, robot: {} },
 ];
 const characterFor = id => CHARACTERS.find(c => c.id === id);
 const configFor = id => { const c = characterFor(id) || CHARACTERS[0]; return { ...CFG, ...c.stats, robot: { ...R, ...c.robot } }; };
@@ -91,7 +95,7 @@ function createMatch(solo = false) {
     if (e.stealth > 0 || e.warp) return false;
     return e.bush < 0 || units().some(u => u.slot === slot && !u.dead && u.bush === e.bush);
   }
-  const damageable = (a, b) => b && !b.dead && b.slot !== a.slot && !protectedUnit(b);
+  const damageable = (a, b) => b && !b.dead && !b.warp && b.slot !== a.slot && !protectedUnit(b);
   const attackable = (a, b) => damageable(a, b) && canSee(a.slot, b);
   function emitSee(src, ev, data) {
     for (const v of Object.values(players)) if (canSee(v.slot, src)) v.socket.emit(ev, data);
@@ -253,7 +257,8 @@ function createMatch(solo = false) {
     }
   }
   function spawn(p) {
-    Object.assign(p, SPAWNS[p.slot], { hp: p.cfg.maxHp, dest: null, target: null, dead: false, dashT: 0, moving: false, respawn: 0, stun: 0, recall: 0, keys: null, inputT: 0, shield: 0, aiming: false, leap: null, air: 0, speedBoost: 0, pull: null, stealth: 0, warp: null });
+    releaseHold(p); p.radius = p.cfg.radius;
+    Object.assign(p, SPAWNS[p.slot], { hp: p.cfg.maxHp, dest: null, target: null, dead: false, dashT: 0, moving: false, respawn: 0, stun: 0, recall: 0, keys: null, inputT: 0, shield: 0, aiming: false, leap: null, air: 0, speedBoost: 0, pull: null, stealth: 0, warp: null, charge: null, grabbing: null, held: null, flight: null });
     p.face = ang(p, { x: 0, z: 0 });
     updateBush(p);
   }
@@ -294,6 +299,8 @@ function createMatch(solo = false) {
     b.recall = 0;
     emitSee(b, 'hit', { id: b.id, source: a.id, dmg, boosted: enhanced });
     if (b.hp > 0) return dealt;
+    releaseHold(b);
+    b.charge = null; b.flight = null;
     b.dead = true;
     b.leap = null; b.air = 0; b.aiming = false; b.pull = null; b.speedBoost = 0; b.stealth = 0; b.warp = null;
     const describe = e => {
@@ -336,11 +343,102 @@ function createMatch(solo = false) {
     }
   }
   function stun(e, duration) {
-    if (e.tower || e.dead) return;
-    e.stun = Math.max(e.stun || 0, duration);
+    if (e.tower || e.dead || e.warp || duration <= 0) return;
+    interrupt(e);
+    e.stun = Math.max(e.stun || 0, duration + (e.cfg?.stunPenalty || 0));
+  }
+  function releaseHold(e) {
+    if (e.held) {
+      const caster = players[e.held.caster];
+      if (caster?.grabbing === e.id) caster.grabbing = null;
+      e.held = null; e.air = 0;
+    }
+    if (e.grabbing) {
+      const victim = unit(e.grabbing);
+      if (victim?.held?.caster === e.id) { victim.held = null; victim.air = 0; }
+      e.grabbing = null;
+    }
+  }
+  function interrupt(e) {
+    releaseHold(e); e.charge = null;
     e.dest = null; e.target = null; e.dashT = 0; e.keys = null; e.recall = 0; e.moving = false;
     e.aiming = false; e.leap = null; e.air = 0; e.warp = null;
     pushOut(e); updateBush(e);
+  }
+  function nearestMelee(p, range) {
+    return targets().filter(e => attackable(p, e) && dist(p, e) <= range + e.radius && Math.abs(wrap(ang(p, e) - p.face)) <= p.cfg.qArc)
+      .sort((a, b) => dist(p, a) - dist(p, b))[0];
+  }
+  function grab(p) {
+    fx(p, 'grab', { range: p.cfg.qRange, halfArc: p.cfg.qArc });
+    const victim = nearestMelee(p, p.cfg.qRange);
+    if (!victim || hit(p, victim, p.cfg.qDmg) <= 0 || victim.dead || victim.tower) return;
+    interrupt(victim); victim.flight = null;
+    victim.held = { caster: p.id, remaining: p.cfg.holdTime, face: p.face };
+    p.grabbing = victim.id; p.keys = null; p.target = null;
+  }
+  function uppercut(p) {
+    fx(p, 'uppercut', { range: p.cfg.cRange, halfArc: p.cfg.qArc });
+    const victim = nearestMelee(p, p.cfg.cRange);
+    if (!victim || hit(p, victim, p.cfg.cDmg) <= 0 || victim.dead || victim.tower) return;
+    stun(victim, p.cfg.cStun);
+    victim.flight = { from: { x: victim.x, z: victim.z }, to: { x: victim.x, z: victim.z }, elapsed: 0, duration: p.cfg.liftTime, height: 3, landingStun: 0 };
+  }
+  function throwDestination(e, face, range) {
+    const blocks = [...OBST, ...Object.values(towers).filter(t => !t.dead).map(t => ({ x: t.x, z: t.z, r: t.radius })),
+      ...(e.slot < 2 ? [{ ...SPAWNS[1-e.slot], r: CFG.safeRadius }] : SPAWNS.map(s => ({ ...s, r: CFG.safeRadius })))];
+    let end = { x: e.x, z: e.z };
+    for (let travel = 0.2; travel <= range + 1e-8; travel += 0.2) {
+      const next = { x: e.x + Math.sin(face) * travel, z: e.z + Math.cos(face) * travel };
+      if (!clearSegment(end, next, e.radius, blocks)) break;
+      end = next;
+    }
+    return end;
+  }
+  function tickForced(e) {
+    if (e.held) {
+      const held = e.held, caster = players[held.caster];
+      if (!caster || caster.dead || caster.grabbing !== e.id) { releaseHold(e); return false; }
+      const distance = caster.radius + e.radius + 0.15;
+      e.x = caster.x + Math.sin(held.face)*distance; e.z = caster.z + Math.cos(held.face)*distance;
+      pushOut(e); updateBush(e); e.air = 1.3; e.moving = false;
+      e.stun = decay(e.stun || 0); held.remaining = decay(held.remaining);
+      if (!held.remaining) {
+        releaseHold(e);
+        e.flight = { from: { x: e.x, z: e.z }, to: throwDestination(e, held.face, caster.cfg.throwRange), elapsed: 0, duration: caster.cfg.throwTime, height: 3, landingStun: 1 };
+        fx(caster, 'throw');
+      }
+      return true;
+    }
+    if (!e.flight) return false;
+    const flight = e.flight;
+    flight.elapsed = Math.min(flight.duration, flight.elapsed + DT);
+    const t = flight.elapsed / flight.duration;
+    e.x = flight.from.x + (flight.to.x-flight.from.x)*t; e.z = flight.from.z + (flight.to.z-flight.from.z)*t;
+    e.air = Math.sin(t*Math.PI)*flight.height; e.moving = false;
+    e.stun = decay(e.stun || 0); updateBush(e);
+    if (t >= 1 - 1e-8) {
+      e.flight = null; e.air = 0; pushOut(e); updateBush(e);
+      if (flight.landingStun) stun(e, flight.landingStun);
+    }
+    return true;
+  }
+  function tickCharge(p) {
+    const charge = p.charge, remaining = dist(p, charge.to);
+    const step = Math.min(p.cfg.chargeSpeed * DT, remaining);
+    const next = { x: p.x + Math.sin(p.face)*step, z: p.z + Math.cos(p.face)*step };
+    const blocks = [...OBST, ...Object.values(towers).filter(t => !t.dead).map(t => ({ x: t.x, z: t.z, r: t.radius })), { ...SPAWNS[1-p.slot], r: CFG.safeRadius }];
+    let contact = Infinity;
+    for (const o of blocks) contact = Math.min(contact, intersection(p, next, o, o.r+p.radius));
+    const fraction = contact === Infinity ? 1 : Math.max(0, contact - 0.0001);
+    const end = { x: p.x + (next.x-p.x)*fraction, z: p.z + (next.z-p.z)*fraction };
+    for (const e of targets()) {
+      if (!damageable(p, e) || charge.hits.has(e.id) || intersection(p, end, e, e.radius+p.radius+0.08) === Infinity) continue;
+      charge.hits.add(e.id);
+      if (hit(p, e, p.cfg.chargeDmg) > 0) { stun(e, p.cfg.chargeStun); fx(p, 'chargeHit'); }
+    }
+    p.x = end.x; p.z = end.z; p.moving = fraction > 0; updateBush(p);
+    if (contact !== Infinity || remaining <= step + 1e-8) { p.charge = null; p.moving = false; }
   }
   function pullUnit(e) {
     if (!e.pull) return;
@@ -442,7 +540,7 @@ function createMatch(solo = false) {
         reset(); phase = 'playing';
       }
     });
-    const ready = () => active() && !p.dead && p.stun <= 0 && !p.leap && !p.warp;
+    const ready = () => active() && !p.dead && p.stun <= 0 && !p.leap && !p.warp && !p.charge && !p.grabbing && !p.held && !p.flight;
     socket.on('cancelLeap', () => { p.aiming = false; });
     socket.on('leap', d => {
       if (!ready() || p.character !== 'alex' || !p.aiming || p.eCd > 0 || !isNum(d?.x, d?.z)) return;
@@ -480,6 +578,7 @@ function createMatch(solo = false) {
       if (!ready() || p.qCd > 0 || p.dashT > 0 || !isNum(d?.x, d?.z)) return;
       p.recall = 0;
       p.qCd = p.cfg.qCd; p.face = ang(p, d); p.dest = null;
+      if (p.character === 'darius') { grab(p); return; }
       if (p.character === 'lucia') {
         const id = 'm' + (++projectileSeq);
         const bolt = projectiles[id] = { id, owner: p.id, slot: p.slot, character: 'lucia', kind: 'abyss', x: p.x, z: p.z, face: p.face, remaining: p.cfg.qRange };
@@ -489,6 +588,11 @@ function createMatch(solo = false) {
     });
     socket.on('dash', d => {
       if (!ready() || p.eCd > 0) return;
+      if (p.character === 'darius') {
+        if (!validDestination(p, d) || dist(p, d) < 0.01) return;
+        p.eCd = p.cfg.eCd; p.recall = 0; p.dest = null; p.target = null; p.keys = null; p.face = ang(p, d);
+        p.charge = { to: { x: d.x, z: d.z }, hits: new Set() }; fx(p, 'charge'); return;
+      }
       if (p.character === 'lucia') {
         if (!validDestination(p, d)) return;
         p.eCd = p.cfg.eCd; p.recall = 0; p.dest = null; p.target = null; p.keys = null; p.face = ang(p, d); p.moving = false;
@@ -501,6 +605,10 @@ function createMatch(solo = false) {
       if (p.character === 'mira') { p.speedBoost = p.cfg.windTime; fx(p, 'wind'); }
     });
     socket.on('c', d => {
+      if (p.character === 'darius') {
+        if (!ready() || p.cCd > 0 || !isNum(d?.x, d?.z)) return;
+        p.cCd = p.cfg.cCd; p.recall = 0; p.face = ang(p, d); p.dest = null; uppercut(p); return;
+      }
       if (p.character === 'lucia') {
         if (!ready() || p.cCd > 0) return;
         p.cCd = p.cfg.cCd; p.recall = 0; fx(p, 'stealth'); p.stealth = 5; return;
@@ -530,6 +638,7 @@ function createMatch(solo = false) {
     });
     socket.on('restart', () => { if (solo && (active() || phase === 'finished')) { reset(); phase = 'playing'; } });
     socket.on('disconnect', () => {
+      releaseHold(p);
       delete players[p.id];
       phase = 'abandoned';
       for (const v of Object.values(players)) v.socket.emit('matchEnded', { reason: '対戦相手が退出しました。ロビーからもう一度参加してください。' });
@@ -542,7 +651,8 @@ function createMatch(solo = false) {
     const R = r.cfg || CFG.robot;
     r.life -= DT; r.atkCd = Math.max(0, r.atkCd - DT);
     const owner = players[r.owner];
-    if (r.life <= 0 || !owner) { delete robots[r.id]; return; }
+    if (r.life <= 0 || !owner) { releaseHold(r); delete robots[r.id]; return; }
+    if (tickForced(r)) return;
     pullUnit(r);
     if (r.stun > 0) { r.stun = decay(r.stun); r.moving = false; return; }
     const marching = isAlexMinion(r);
@@ -580,6 +690,7 @@ function createMatch(solo = false) {
     for (const cd of ['atkCd', 'qCd', 'eCd', 'cCd']) p[cd] = Math.max(0, p[cd] - DT);
     if (p.dead) { p.respawn = decay(p.respawn); if (p.respawn <= 0) spawn(p); return; }
     p.moving = false;
+    if (tickForced(p)) return;
     const speed = p.cfg.speed * (p.speedBoost > 0 ? p.cfg.windMultiplier : 1);
     p.speedBoost = decay(p.speedBoost);
     p.stealth = decay(p.stealth);
@@ -589,6 +700,8 @@ function createMatch(solo = false) {
     pullUnit(p);
     if (p.stun > 0) { p.stun = decay(p.stun); return; }
     if (p.warp) { tickWarp(p); return; }
+    if (p.charge) { tickCharge(p); return; }
+    if (p.grabbing) return;
     if (p.leap) { tickLeap(p); return; }
     if (p.recall > 0) {
       p.recall = Math.max(0, p.recall - DT);
@@ -651,7 +764,9 @@ function createMatch(solo = false) {
       updateBush(m);
     }
     for (const m of Object.values(monsters)) {
-      m.atkCd = decay(m.atkCd); pullUnit(m); m.moving = false;
+      m.atkCd = decay(m.atkCd); m.moving = false;
+      if (tickForced(m)) continue;
+      pullUnit(m);
       if (m.stun > 0) { m.stun = decay(m.stun); continue; }
       const foe = units().filter(e => !e.monster && attackable(m, e) && dist(e, m.home) < 11 && dist(e, m) < 8).sort((a,b) => dist(m,a)-dist(m,b))[0];
       const goal = foe || m.home, d = dist(m, goal);
@@ -696,16 +811,16 @@ function createMatch(solo = false) {
         solo, winner, phase,
         control: [0, 1].map(slot => ({ slot, boundary: boundary(slot), energy: environment.totals[slot] })),
         energy: Object.values(energy),
-        monsters: Object.values(monsters).filter(m => canSee(v.slot, m)).map(m => ({ id: m.id, slot: 2, large: m.large, x: r2(m.x), z: r2(m.z), hp: r2(m.hp), maxHp: m.maxHp, face: m.face, moving: m.moving, stun: m.stun })),
+        monsters: Object.values(monsters).filter(m => canSee(v.slot, m)).map(m => ({ id: m.id, slot: 2, large: m.large, x: r2(m.x), z: r2(m.z), hp: r2(m.hp), maxHp: m.maxHp, face: m.face, moving: m.moving, stun: m.stun, air: r2(m.air || 0) })),
         towers: Object.values(towers).map(t => ({ id: t.id, slot: t.slot, x: r2(t.x), z: r2(t.z), hp: t.hp, dead: t.dead, face: t.face })),
         players: list.map(p => {
           const vis = canSee(v.slot, p);
           const s = { id: p.id, slot: p.slot, character: p.character, confirmed: p.confirmed, maxHp: p.cfg.maxHp, hp: r2(p.hp), dead: p.dead, kills: p.kills, energy: p.energy, vis, stun: r2(p.stun), recall: r2(p.recall), shield: r2(p.shield) };
-          if (vis) Object.assign(s, { x: r2(p.x), z: r2(p.z), face: r2(p.face), moving: active() && p.moving, air: r2(p.air), speedBoost: r2(p.speedBoost), stealth: r2(p.stealth), warping: p.warp ? r2(p.warp.remaining) : 0 });
+          if (vis) Object.assign(s, { x: r2(p.x), z: r2(p.z), face: r2(p.face), moving: active() && p.moving, air: r2(p.air), speedBoost: r2(p.speedBoost), stealth: r2(p.stealth), warping: p.warp ? r2(p.warp.remaining) : 0, charging: !!p.charge, grabbing: !!p.grabbing, grabbed: !!p.held, flying: !!p.flight, radius: p.radius });
           if (p === v) Object.assign(s, { aiming: p.aiming, qCd: r2(p.qCd), eCd: r2(p.eCd), cCd: r2(p.cCd), respawn: r2(Math.max(0, p.respawn)), safe: !p.dead && protectedUnit(p), respawnTime: CFG.respawn + destroyed(p.slot) * CFG.respawnPerTower });
           return s;
         }),
-        robots: Object.values(robots).filter(r => canSee(v.slot, r)).map(r => ({ id: r.id, slot: r.slot, character: r.character, maxHp: r.maxHp || R.hp, x: r2(r.x), z: r2(r.z), face: r2(r.face), hp: r.hp, stun: r2(r.stun || 0), moving: active() && r.moving })),
+        robots: Object.values(robots).filter(r => canSee(v.slot, r)).map(r => ({ id: r.id, slot: r.slot, character: r.character, maxHp: r.maxHp || R.hp, x: r2(r.x), z: r2(r.z), face: r2(r.face), hp: r.hp, stun: r2(r.stun || 0), moving: active() && r.moving, air: r2(r.air || 0) })),
         projectiles: Object.values(projectiles).filter(b => canSee(v.slot, b)).map(b => ({ id: b.id, slot: b.slot, character: b.character, x: r2(b.x), z: r2(b.z), face: b.face, kind: b.kind })),
       });
     }

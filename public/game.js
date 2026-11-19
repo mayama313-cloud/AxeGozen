@@ -314,6 +314,16 @@ function makeEnergy() {
   add(new THREE.OctahedronGeometry(0.35), 0xffd85b, 0, 0, 0, g, false);
   return { g, mats: [] };
 }
+function makeDarius(color) {
+  const beast = makeMonster(false, 'monster-1');
+  beast.g.scale.setScalar(1.7); beast.hpHeight = 3.1;
+  beast.g.userData.species = 'darius';
+  for (const side of [-1, 1]) {
+    const plate = add(new THREE.BoxGeometry(0.16, 0.36, 0.65), color, side * 0.5, 1, 0.25, beast.g);
+    beast.mats.push(plate.material);
+  }
+  return beast;
+}
 const controlRoot = new THREE.Group(); scene.add(controlRoot);
 let controlSignature = '';
 function updateControlZones(zones) {
@@ -346,7 +356,7 @@ function ensure(s, kind) {
   }
   if (ents[s.id]) return ents[s.id];
   const color = s.slot === mySlot ? ALLY : ENEMY;
-  const h = kind === 'energy' ? makeEnergy() : kind === 'monster' ? makeMonster(s.large, s.id) : kind === 'projectile' ? makeProjectile(s.character) : kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : makeHuman(color, s.character);
+  const h = kind === 'energy' ? makeEnergy() : kind === 'monster' ? makeMonster(s.large, s.id) : kind === 'projectile' ? makeProjectile(s.character) : kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : s.character === 'darius' ? makeDarius(color) : makeHuman(color, s.character);
   h.g.position.set(s.x, 0, s.z);
   scene.add(h.g);
   return (ents[s.id] = Object.assign(h, { kind, bar: ['human', 'monster', 'robot', 'tower'].includes(kind) ? makeBar(kind === 'human' ? color : 0x8be0a0) : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
@@ -413,6 +423,8 @@ socket.on('fx', d => {
   else if (['magicHit', 'wind'].includes(d.kind)) arc(d.x, d.z, d.face, 1.5, Math.PI, color);
   else if (d.kind === 'warpHit') arc(d.x, d.z, d.face, d.range, Math.PI, color);
   else if (['warp', 'stealth', 'abyssHit'].includes(d.kind)) arc(d.x, d.z, d.face, 1.5, Math.PI, color);
+  else if (['grab', 'uppercut'].includes(d.kind)) arc(d.x, d.z, d.face, d.range, d.halfArc, 0xffa358);
+  else if (['charge', 'chargeHit', 'throw'].includes(d.kind)) arc(d.x, d.z, d.face, 2, 0.7, 0xffa358);
 });
 socket.on('heal', d => { const e = ents[d.id]; if (e) dmgText(e, `+${d.amount}`, false, '#8bffae'); });
 
@@ -449,7 +461,11 @@ function hud(st) {
     : st.phase === 'waiting' ? '対戦相手を待っています…（1人用テストも選べます）'
     : m.dead ? `リスポーンまで ${Math.ceil(m.respawn)}秒`
     : m.stun > 0 ? 'スタン中'
-    : m.warping > 0 ? `魔影転移… ${m.warping.toFixed(1)}秒`
+    : m.grabbed ? '掴まれています'
+    : m.flying ? '空中に投げ飛ばされています'
+    : m.grabbing ? '敵を掴んでいます'
+    : m.charging ? '猪突猛進！'
+    : m.warping > 0 ? `魔影転移・無敵… ${m.warping.toFixed(1)}秒`
     : skillAim.current ? `${character.skills[skillAim.current.key].name}：${gameControls.mode === 'hold' ? 'キーを離すか左クリックで発動' : '左クリックで発動・同じキーでキャンセル'}（右クリック・Escでキャンセル）`
     : m.recall > 0 ? `リコール中… ${m.recall.toFixed(1)}秒（移動・攻撃・被ダメージで中断）` : '';
 }
@@ -523,7 +539,7 @@ const skillAim = createSkillAim({
   emit: (event, data) => { if (event === 'leap' || (event === 'dash' && data)) clearKeys(); socket.emit(event, data); },
   changed: current => {
     canvas.style.cursor = current ? 'crosshair' : '';
-    const color = current?.character === 'lucia' ? 0xc58cff : 0x72d8ff;
+    const color = current?.character === 'lucia' ? 0xc58cff : current?.character === 'darius' ? 0xffa358 : 0x72d8ff;
     skillAreaMesh.material.color.setHex(color); skillLineMesh.material.color.setHex(color); skillArrow.material.color.setHex(color);
     if (current?.kind === 'cone') {
       skillAreaMesh.geometry.dispose();
@@ -598,7 +614,7 @@ addEventListener('keydown', ev => {
     ev.preventDefault(); heldKeys.add(k); sendKeys();
   } else if (k === 'c' && ents[myId]?.s.character === 'lucia') {
     skillAim.cancel(); socket.emit('c');
-  } else if (['q', 'c'].includes(k) || (k === 'e' && ['alex', 'lucia'].includes(ents[myId]?.s.character))) {
+  } else if (['q', 'c'].includes(k) || (k === 'e' && ['alex', 'lucia', 'darius'].includes(ents[myId]?.s.character))) {
     ev.preventDefault(); skillAim.begin(k);
   } else if (k === 'e') { skillAim.cancel(); socket.emit('dash'); }
   else if (k === 'b') { skillAim.cancel(); clearKeys(); socket.emit('recall'); }
@@ -651,7 +667,7 @@ function frame() {
 
     if (e.bar) {
       e.bar.visible = !s.dead && !(s.warping > 0) && (e.kind !== 'human' || gameControls.hpBar === 'overhead');
-      const height = e.kind === 'human' ? 2.8 + (s.air || 0) : e.hpHeight || 1.85;
+      const height = (e.hpHeight || (e.kind === 'human' ? 2.8 : 1.85)) + (s.air || 0);
       e.bar.position.set(e.x, height, e.z);
       e.bar.scale.setScalar(e.kind === 'human' ? 2 : e.kind === 'monster' ? (s.large ? 2.6 : 1.5) : 1);
       e.bar.quaternion.copy(camera.quaternion);
@@ -661,25 +677,29 @@ function frame() {
 
   const me = ents[myId];
   const targeting = skillAim.current, showingAim = !!targeting && !!me && phase === 'playing';
-  leapRangeRing.visible = showingAim && ['leap', 'warp', 'cone'].includes(targeting.kind);
-  leapPointRing.visible = showingAim && ['leap', 'warp'].includes(targeting.kind);
+  leapRangeRing.visible = showingAim && ['leap', 'warp', 'charge', 'cone'].includes(targeting.kind);
+  leapPointRing.visible = showingAim && ['leap', 'warp', 'charge'].includes(targeting.kind);
   skillArea.visible = showingAim && targeting.kind === 'cone';
-  skillLine.visible = showingAim && ['projectile', 'summon'].includes(targeting.kind);
+  skillLine.visible = showingAim && ['projectile', 'summon', 'charge'].includes(targeting.kind);
   if (showingAim) {
     const point = groundAt(mouse);
     const face = Math.atan2(point.x - me.x, point.z - me.z);
     leapRangeRing.position.set(me.x, 0.14, me.z);
-    leapRangeRing.scale.setScalar(['leap', 'warp'].includes(targeting.kind) ? cfg.leapRange : cfg.qRange);
+    leapRangeRing.scale.setScalar(['leap', 'warp', 'charge'].includes(targeting.kind) ? cfg.leapRange : targeting.key === 'c' ? cfg.cRange : cfg.qRange);
+    if (targeting.kind === 'charge') {
+      leapPointRing.position.set(point.x, 0.15, point.z); leapPointRing.scale.setScalar(cfg.radius);
+      leapPointRing.material.color.setHex(validLeapPoint(point, me.s) ? 0x8be0a0 : 0xff4545);
+    }
     if (['leap', 'warp'].includes(targeting.kind)) {
       leapPointRing.position.set(point.x, 0.15, point.z); leapPointRing.scale.setScalar(cfg.leapHitRange);
       leapPointRing.material.color.setHex(validLeapPoint(point, me.s) ? 0x8be0a0 : 0xff4545);
     } else if (targeting.kind === 'cone') {
       skillArea.position.set(me.x, 0.13, me.z); skillArea.rotation.y = face - Math.PI / 2;
-      skillArea.scale.setScalar(cfg.qRange);
+      skillArea.scale.setScalar(targeting.key === 'c' ? cfg.cRange : cfg.qRange);
     } else {
-      const length = targeting.kind === 'projectile' ? targeting.key === 'q' ? cfg.qRange : cfg.magicRange : 2.4;
+      const length = targeting.kind === 'charge' ? Math.min(cfg.leapRange, Math.hypot(point.x-me.x, point.z-me.z)) : targeting.kind === 'projectile' ? targeting.key === 'q' ? cfg.qRange : cfg.magicRange : 2.4;
       skillLine.position.set(me.x, 0.15, me.z); skillLine.rotation.y = face;
-      skillLineMesh.scale.set(targeting.kind === 'projectile' ? (targeting.key === 'q' ? cfg.qRadius : cfg.magicRadius) * 2 : 0.5, length, 1);
+      skillLineMesh.scale.set(targeting.kind === 'charge' ? cfg.radius*2 : targeting.kind === 'projectile' ? (targeting.key === 'q' ? cfg.qRadius : cfg.magicRadius) * 2 : 0.5, length, 1);
       skillLineMesh.position.z = length / 2; skillArrow.position.set(0, 0, length);
     }
   }

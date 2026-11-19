@@ -191,12 +191,15 @@ function makeTower(color) {
 }
 
 // 頭上HPバー（カメラの向きに合わせて常に正面表示）
-function makeBar() {
+function makeBar(color = 0x8be0a0) {
   const bar = new THREE.Group();
-  const bg = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.12), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.6, depthTest: false }));
-  const fg = new THREE.Mesh(new THREE.PlaneGeometry(0.86, 0.08).translate(0.43, 0, 0), new THREE.MeshBasicMaterial({ color: 0x8be0a0, depthTest: false }));
+  // 背景と残量を同じ描画キューに入れ、透明な物体より後に背景→残量の順で描く。
+  const material = color => new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1, depthTest: false, depthWrite: false, toneMapped: false, fog: false });
+  const bg = new THREE.Mesh(new THREE.PlaneGeometry(0.94, 0.16), material(0x101820));
+  const fg = new THREE.Mesh(new THREE.PlaneGeometry(0.86, 0.08).translate(0.43, 0, 0), material(color));
   fg.position.set(-0.43, 0, 0.001);
-  bg.renderOrder = 10; fg.renderOrder = 11;
+  bar.renderOrder = 1000;
+  bg.renderOrder = 1000; fg.renderOrder = 1001;
   bar.add(bg, fg);
   scene.add(bar);
   bar.fill = fg;
@@ -243,10 +246,68 @@ socket.on('kill', d => {
   later(() => entry.remove(), 8000);
 });
 
-function makeMonster(large) {
-  const h = makeHuman(large ? 0x9c559e : 0x9b8955, 'lucia');
-  h.g.scale.setScalar(large ? 2 : 0.95);
-  return h;
+function makeMonster(large, id) {
+  const species = large ? 'reindeer' : Number(id.split('-').pop()) % 2 ? 'boar' : 'deer';
+  const boar = species === 'boar', reindeer = species === 'reindeer';
+  const g = new THREE.Group(), mats = [], limbs = [];
+  g.userData.species = species;
+  const coat = boar ? 0x675044 : reindeer ? 0x89705b : 0xb68450;
+  const part = (geo, color, x, y, z, parent = g) => {
+    const mesh = add(geo, color, x, y, z, parent); mats.push(mesh.material); return mesh;
+  };
+  const oval = (color, x, y, z, sx, sy, sz, parent = g) => {
+    const mesh = part(new THREE.IcosahedronGeometry(1, 1), color, x, y, z, parent);
+    mesh.scale.set(sx, sy, sz); return mesh;
+  };
+  const bodyY = boar ? 0.8 : 1.1;
+  oval(coat, 0, bodyY, 0, boar ? 0.55 : 0.43, boar ? 0.55 : 0.53, 0.85);
+  for (const x of [-0.3, 0.3]) for (const z of [-0.52, 0.53]) {
+    const leg = new THREE.Group(); leg.position.set(x, bodyY - 0.12, z); g.add(leg); limbs.push(leg);
+    const length = boar ? 0.58 : 0.88;
+    part(new THREE.CylinderGeometry(0.09, 0.065, length, 6), coat, 0, -length / 2, 0, leg);
+    part(new THREE.BoxGeometry(0.17, 0.14, 0.22), 0x282321, 0, -length + 0.03, 0.02, leg);
+  }
+  const head = new THREE.Group(); head.position.set(0, bodyY, 0.6); g.add(head);
+  if (boar) {
+    oval(coat, 0, 0.08, 0.23, 0.4, 0.4, 0.49, head);
+    oval(0x9c7564, 0, -0.02, 0.68, 0.25, 0.2, 0.2, head);
+    for (const x of [-0.1, 0.1]) oval(0x29201d, x, 0, 0.85, 0.045, 0.05, 0.02, head);
+    for (const side of [-1, 1]) {
+      const ear = part(new THREE.ConeGeometry(0.18, 0.4, 4), coat, side * 0.28, 0.42, 0.05, head); ear.rotation.z = -side * 0.45;
+      const tusk = part(new THREE.ConeGeometry(0.075, 0.38, 6), 0xf2dfb5, side * 0.3, -0.02, 0.57, head); tusk.rotation.z = -side * 0.4;
+      oval(0x131414, side * 0.34, 0.2, 0.37, 0.055, 0.065, 0.055, head);
+    }
+    for (let z = -0.6; z < 0.45; z += 0.22) part(new THREE.ConeGeometry(0.13, 0.26, 4), 0x3c302a, 0, 1.35, z);
+  } else {
+    oval(reindeer ? 0xd9cbb4 : coat, 0, 0.25, 0.12, 0.29, 0.62, 0.28, head);
+    oval(coat, 0, 0.85, 0.31, 0.28, 0.31, 0.47, head);
+    oval(reindeer ? 0xd7c6ac : 0xddbd94, 0, 0.73, 0.65, 0.21, 0.18, 0.24, head);
+    oval(0x2c2724, 0, 0.76, 0.86, 0.16, 0.12, 0.07, head);
+    for (const side of [-1, 1]) {
+      const ear = oval(coat, side * 0.39, 1.02, 0.18, 0.24, 0.1, 0.15, head); ear.rotation.z = side * 0.4;
+      oval(0x15191b, side * 0.25, 0.93, 0.46, 0.045, 0.055, 0.045, head);
+    }
+    const antler = (a, b, radius) => {
+      const from = new THREE.Vector3(...a), to = new THREE.Vector3(...b), delta = to.clone().sub(from);
+      const branch = part(new THREE.CylinderGeometry(radius * 0.65, radius, delta.length(), 5), 0xe2ceb0, 0, 0, 0, head);
+      branch.position.copy(from.add(to).multiplyScalar(0.5));
+      branch.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), delta.normalize());
+    };
+    for (const side of [-1, 1]) {
+      const base = [side * 0.18, 1.05, 0.16], elbow = [side * (reindeer ? 0.6 : 0.38), 1.55, 0];
+      const tip = [side * (reindeer ? 0.88 : 0.48), reindeer ? 2.05 : 1.85, -0.12];
+      antler(base, elbow, 0.07); antler(elbow, tip, 0.055);
+      antler(elbow, [side * (reindeer ? 0.92 : 0.65), 1.7, 0.3], 0.045);
+      if (reindeer) {
+        antler([side * 0.74, 1.8, -0.06], [side * 1.12, 2.05, 0.1], 0.04);
+        antler(base, [side * 0.44, 1.38, 0.57], 0.05);
+        antler([side * 0.44, 1.38, 0.57], [side * 0.68, 1.62, 0.62], 0.035);
+      }
+    }
+    oval(reindeer ? 0xefe2ce : 0xe7cfaa, 0, 1.05, -0.8, 0.15, 0.21, 0.13);
+  }
+  const scale = large ? 1.65 : 0.9; g.scale.setScalar(scale);
+  return { g, mats, limbs, head, hpHeight: (boar ? 1.8 : reindeer ? 3.35 : 3.1) * scale };
 }
 function makeEnergy() {
   const g = new THREE.Group();
@@ -285,10 +346,10 @@ function ensure(s, kind) {
   }
   if (ents[s.id]) return ents[s.id];
   const color = s.slot === mySlot ? ALLY : ENEMY;
-  const h = kind === 'energy' ? makeEnergy() : kind === 'monster' ? makeMonster(s.large) : kind === 'projectile' ? makeProjectile(s.character) : kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : makeHuman(color, s.character);
+  const h = kind === 'energy' ? makeEnergy() : kind === 'monster' ? makeMonster(s.large, s.id) : kind === 'projectile' ? makeProjectile(s.character) : kind === 'tower' ? makeTower(color) : kind === 'robot' ? makeRobot(color) : makeHuman(color, s.character);
   h.g.position.set(s.x, 0, s.z);
   scene.add(h.g);
-  return (ents[s.id] = Object.assign(h, { kind, bar: kind === 'monster' || kind === 'robot' || kind === 'tower' ? makeBar() : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
+  return (ents[s.id] = Object.assign(h, { kind, bar: ['human', 'monster', 'robot', 'tower'].includes(kind) ? makeBar(kind === 'human' ? color : 0x8be0a0) : null, x: s.x, z: s.z, face: s.face, s, phase: 0, swing: 0, flash: 0 }));
 }
 
 socket.on('init', d => {
@@ -580,14 +641,22 @@ function frame() {
     e.mats.forEach(m => { m.transparent = s.stealth > 0; m.opacity = s.stealth > 0 ? 0.35 : 1; });
     e.g.position.set(e.x, (s.air || 0) + (s.moving ? Math.abs(Math.sin(e.phase)) * 0.08 : 0), e.z);
     e.g.rotation.y = e.face;
-    e.legL.rotation.x = w;
-    e.legR.rotation.x = -w;
-    e.armL.rotation.x = -w * 0.8;
-    e.armR.rotation.x = e.swing > 0 ? -2.6 + 3 * (1 - e.swing / 0.25) : w * 0.8; // 振り下ろし
+    if (e.limbs) {
+      e.limbs.forEach((leg, i) => { leg.rotation.x = w * (i === 0 || i === 3 ? 1 : -1) * 0.55; });
+      e.head.rotation.x = e.swing > 0 ? Math.sin(e.swing / 0.25 * Math.PI) * 0.35 : 0;
+    } else {
+      e.legL.rotation.x = w;
+      e.legR.rotation.x = -w;
+      e.armL.rotation.x = -w * 0.8;
+      e.armR.rotation.x = e.swing > 0 ? -2.6 + 3 * (1 - e.swing / 0.25) : w * 0.8;
+    }
     e.mats.forEach(m => m.emissive.setHex(e.flash > 0 ? 0x992222 : s.stun > 0 ? 0x776600 : e.swing > 0 && e.attackBoost ? 0xaa1010 : s.shield > 0 ? 0x224477 : s.speedBoost > 0 ? 0x226655 : 0x000000));
 
     if (e.bar) {
-      e.bar.position.set(e.x, e.kind === 'monster' ? (s.large ? 4.5 : 2.2) : 1.85, e.z);
+      e.bar.visible = !s.dead && !(s.warping > 0) && (e.kind !== 'human' || gameControls.hpBar === 'overhead');
+      const height = e.kind === 'human' ? 2.8 + (s.air || 0) : e.hpHeight || 1.85;
+      e.bar.position.set(e.x, height, e.z);
+      e.bar.scale.setScalar(e.kind === 'human' ? 2 : e.kind === 'monster' ? (s.large ? 2.6 : 1.5) : 1);
       e.bar.quaternion.copy(camera.quaternion);
       e.bar.fill.scale.x = Math.max(0.001, s.hp / s.maxHp);
     }

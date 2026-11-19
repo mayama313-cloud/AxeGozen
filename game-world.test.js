@@ -27,6 +27,48 @@ const ticks = (match, n) => { for (let i = 0; i < n; i++) match.tick(); };
 const aim = e => ({ x: e.x, z: e.z });
 function place(e, x, z) { Object.assign(e, { x, z, dest: null, target: null, bush: -1 }); }
 
+test('five Alex minions attack a large monster from outside its body without overlapping', () => {
+  const { match, a, p, robots } = setup(true);
+  place(p, 0, 7);
+  a.send('c', { x: 0, z: 3 }); p.cCd = 0;
+  a.send('c', { x: 0, z: 3 });
+  place(p, MAP.spawns[0].x, MAP.spawns[0].z);
+  const monster = match.state.monsters['monster-0'] = {
+    id: 'monster-0', monster: true, large: true, slot: 2, x: 0, z: 3,
+    radius: 1.5, maxHp: 10000, hp: 10000, face: 0, atkCd: 0,
+    stun: 0, dead: false, moving: false, bush: -1,
+  };
+  ticks(match, TICK * 3);
+  assert.equal(Object.keys(robots).length, 5);
+  assert.ok(monster.hp < 10000, 'minions must damage the monster instead of searching for a point inside its body');
+  for (const minion of Object.values(robots)) {
+    assert.equal(minion.target, monster.id);
+    assert.ok(Math.hypot(minion.x - monster.x, minion.z - monster.z) >= minion.radius + monster.radius);
+  }
+  assertAlexSeparated(match);
+});
+
+test('Alex minions wait before retrying an unreachable route and can recover when it opens', () => {
+  const { match, a, p, robots, towers } = setup(true);
+  const tower = towers['t1-2'];
+  // Place the target inside a solid rock: no attack position is reachable.
+  for (const t of Object.values(towers)) t.dead = t !== tower;
+  place(tower, -20, 0); place(p, -20, 6);
+  a.send('c', { x: -20, z: 0 });
+  const minion = Object.values(robots)[0];
+  for (const other of Object.values(robots).slice(1)) delete robots[other.id];
+  place(minion, -20, 5); place(p, MAP.spawns[0].x, MAP.spawns[0].z);
+  match.tick();
+  const failedPath = minion.path;
+  assert.deepEqual(failedPath, []);
+  ticks(match, 8);
+  assert.equal(minion.path, failedPath, 'failed searches must not repeat every frame');
+  assert.ok(minion.pathAge > 0.2);
+  place(tower, -20, 10);
+  ticks(match, TICK * 2);
+  assert.ok(tower.hp < CFG.tower.hp, 'a failed search must not prevent later movement and attacks');
+});
+
 test('five symmetric towers per spawn, all outside safe zones and map walls', () => {
   const { towers } = setup();
   for (let i = 0; i < 5; i++) {

@@ -5,14 +5,18 @@
   const bindings = { ...defaults };
   if (saved?.bindings && Object.keys(defaults).every(k => typeof saved.bindings[k] === 'string') && new Set(Object.values(saved.bindings)).size === 8) Object.assign(bindings, saved.bindings);
   let mode = saved?.mode === 'toggle' ? 'toggle' : 'hold';
+  let hpBar = saved?.hpBar === 'overhead' ? 'overhead' : 'screen';
   let pending = null;
   const label = code => code.replace(/^Key|^Digit/, '');
   const panel = document.createElement('details'); panel.id = 'controlsPanel';
-  panel.innerHTML = '<summary>操作設定</summary><label>方向選択 <select id="aimMode"><option value="hold">ホールド</option><option value="toggle">切り替え</option></select></label><div id="keyBindings"></div><button id="resetControls" type="button">初期設定に戻す</button><p id="controlHint">変更するキーを押してから割り当てます。重複キーは交換します。</p>';
+  panel.innerHTML = '<summary>操作・表示設定</summary><label>プレイヤーHPバー <select id="hpBarPosition"><option value="screen">画面上に固定</option><option value="overhead">キャラクターの上</option></select></label><label>方向選択 <select id="aimMode"><option value="hold">ホールド</option><option value="toggle">切り替え</option></select></label><div id="keyBindings"></div><button id="resetControls" type="button">初期設定に戻す</button><p id="controlHint">変更するキーを押してから割り当てます。重複キーは交換します。</p>';
   document.body.append(panel);
   const select = document.getElementById('aimMode'); select.value = mode;
+  const hpSelect = document.getElementById('hpBarPosition'); hpSelect.value = hpBar;
   const names = { w: '上へ移動', a: '左へ移動', s: '下へ移動', d: '右へ移動', q: 'Qスキル', e: 'Eスキル', c: 'Cスキル', b: 'リコール' };
   const render = () => {
+    document.getElementById('meBar').hidden = hpBar === 'overhead';
+    document.getElementById('foeBar').hidden = hpBar === 'overhead';
     const root = document.getElementById('keyBindings'); root.replaceChildren();
     for (const action of Object.keys(defaults)) {
       const row = document.createElement('label'); row.textContent = names[action];
@@ -24,9 +28,10 @@
     }
     document.getElementById('help').textContent = `${['w','a','s','d'].map(k => label(bindings[k])).join('/')}: 移動 / 右クリック: 移動・通常攻撃 / 方向選択: ${mode === 'hold' ? '長押し→離すか左クリックで発動' : '押して照準→左クリックで発動、同じキーでキャンセル'} / Esc・右クリック: キャンセル / ${label(bindings.b)}: リコール。エネルギー獲得で敵の領域が縮小。敵タワー5本破壊で勝利。`;
   };
-  const save = () => { try { localStorage.setItem('axe-gozen-controls', JSON.stringify({ bindings, mode })); } catch {} render(); window.dispatchEvent(new Event('controlschange')); };
+  const save = () => { try { localStorage.setItem('axe-gozen-controls', JSON.stringify({ bindings, mode, hpBar })); } catch {} render(); window.dispatchEvent(new Event('controlschange')); };
+  hpSelect.onchange = () => { hpBar = hpSelect.value; pending = null; save(); };
   select.onchange = () => { mode = select.value; pending = null; save(); };
-  document.getElementById('resetControls').onclick = () => { Object.assign(bindings, defaults); mode = 'hold'; select.value = mode; pending = null; save(); };
+  document.getElementById('resetControls').onclick = () => { Object.assign(bindings, defaults); mode = 'hold'; select.value = mode; hpBar = 'screen'; hpSelect.value = hpBar; pending = null; save(); };
   window.addEventListener('keydown', ev => {
     if (!pending) return;
     ev.preventDefault(); ev.stopImmediatePropagation();
@@ -37,6 +42,6 @@
     bindings[pending] = ev.code; pending = null; save();
   }, true);
   panel.addEventListener('toggle', () => { if (!panel.open) { pending = null; render(); } });
-  window.gameControls = { action: code => Object.keys(bindings).find(k => bindings[k] === code), get mode() { return mode; } };
+  window.gameControls = { action: code => Object.keys(bindings).find(k => bindings[k] === code), get mode() { return mode; }, get hpBar() { return hpBar; } };
   render();
 })();

@@ -182,7 +182,9 @@ function createMatch(solo = false) {
     if (!start) return [];
     const open = [start], nodes = new Map([[key(start.x, start.z), start]]), closed = new Set();
     start.cost = 0; start.score = dist(start, goal);
-    while (open.length) {
+    // 到達不能な目的地でも、1回の探索でフレーム全体を使い切らない。
+    let explored = 0;
+    while (open.length && explored++ < 512) {
       let best = 0;
       for (let i = 1; i < open.length; i++) if (open[i].score < open[best].score) best = i;
       const current = open.splice(best, 1)[0], id = key(current.x, current.z);
@@ -211,7 +213,10 @@ function createMatch(solo = false) {
     let waypoint = approach;
     if (!clearSegment(r, approach, r.radius, blocks)) {
       r.pathAge = (r.pathAge || 0) + DT;
-      if (!r.path?.length || r.pathTarget !== goal.id || dist(r.pathGoal, goal) > 1 || r.pathAge >= 1) {
+      const changedTarget = r.pathTarget !== goal.id;
+      const movedTarget = r.pathGoal && dist(r.pathGoal, goal) > 1;
+      const retryAfter = r.path?.length ? 1 : 0.5;
+      if (changedTarget || r.pathAge >= retryAfter || (movedTarget && r.pathAge >= 0.25)) {
         r.path = findPath(r, goal, stop, blocks); r.pathTarget = goal.id; r.pathGoal = { x: goal.x, z: goal.z }; r.pathAge = 0;
       }
       while (r.path.length && dist(r, r.path[0]) < 0.2) r.path.shift();
@@ -516,7 +521,8 @@ function createMatch(solo = false) {
     });
     return true;
   }
-  const reach = (range, e) => range + (e.tower ? e.radius : 0);
+  // 大型モンスターの中心ではなく、体の外周を攻撃可能な距離として扱う。
+  const reach = (range, e) => range + (e.tower || e.monster ? e.radius : 0);
   function tickRobot(r) {
     const R = r.cfg || CFG.robot;
     r.life -= DT; r.atkCd = Math.max(0, r.atkCd - DT);

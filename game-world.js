@@ -21,15 +21,15 @@ const CHARACTERS = [
     skills: { q: { name: 'クレセント', text: '前方を23ダメージで斬り、0.3秒スタン。' }, e: { name: 'ラッシュ', text: 'E長押しで照準、キーを離すか左クリックで射程10の着地点を確定。着地後に近くの敵1体へ45ダメージ・1秒スタン。CD30秒。右クリック・Escで照準解除。' }, c: { name: 'アサルト部隊', text: 'HP80・攻撃力10・速度8のミニオンを1体召喚。最大5体。他のユニットを避けて敵タワーへ進軍し、途中の敵と戦う。' } }, stats: { eCd: 30, qDmg: 23, leapDmg: 45, leapRange: 10 }, robot: { hp: 80, dmg: 10, speed: 8, batch: 1 } },
   { id: 'mira', name: 'ミラ', role: '機動力・遠めの範囲攻撃', color: '#7ddbd3',
     passive: '風の足取り：移動速度が9から11に上昇。',
-    skills: { q: { name: 'フロストファン', text: '射程14の扇形に22ダメージ、2秒スタン。' }, e: { name: 'ウィンドステップ', text: '3秒間、移動速度が2倍（11→22）。CD10秒。' }, c: { name: 'マジックスカウト', text: 'カーソル方向へ射程14の高速魔法を放つ。最初に当たった敵ユニットに30ダメージ、最大6引き寄せ、1.5秒スタン。CD8秒。' } },
-    stats: { atkRange: 8, speed: 11, qRange: 14, qArc: Math.PI / 5, qDmg: 22, qStun: 2, qCd: 6, eCd: 10 }, robot: {} },
+    skills: { q: { name: 'フロストファン', text: '射程14の扇形に7ダメージ、1.5秒スタン。CD9秒。' }, e: { name: 'ウィンドステップ', text: '3秒間、移動速度が2倍（11→22）。CD10秒。' }, c: { name: 'マジックスカウト', text: 'カーソル方向へ射程14の高速魔法を放つ。最初に当たった敵ユニットに30ダメージ、最大6引き寄せ、1.5秒スタン。CD11秒。' } },
+    stats: { atkDmg: 15, atkRange: 8, speed: 11, qRange: 14, qArc: Math.PI / 5, qDmg: 7, qStun: 1.5, qCd: 9, eCd: 10, cCd: 11 }, robot: {} },
   { id: 'bastion', name: 'バスティオン', role: '耐久・防衛', color: '#e8bc65',
     passive: '不屈の体：最大HPが200から280に上昇。',
     skills: { q: { name: 'グラウンドブレイク', text: '周囲3.5の敵に20ダメージ、0.5秒スタン。' }, e: { name: 'アイアンガード', text: '2秒間、受けるダメージを50%軽減。クールダウン6秒。' }, c: { name: 'ガーディアン部隊', text: 'HP100・攻撃力4・速度4の守護ユニットを3体召喚。最大5体。他のユニットを避けながら追従・戦闘する。' } },
     stats: { maxHp: 280, speed: 8.5, qRange: 3.5, qArc: Math.PI, qDmg: 20, qStun: 0.5, qCd: 7, eCd: 6, cCd: 10 }, robot: { hp: 100, dmg: 4, speed: 4, batch: 3 } },
   { id: 'lucia', name: 'ルシア', role: '悪魔・吸収・奇襲', color: '#c58cff',
     passive: '悪魔の渇望：敵キャラクターに実際に与えたダメージの10%をHPとして回復。',
-    skills: { q: { name: '禍球', text: '射程12の禍々しい球を放ち、最初に当たった敵ユニットに50ダメージ。命中時に自身のHPを30回復。CD6秒。' }, e: { name: '魔影転移', text: '指定地点へ1秒間姿を消してからワープし、半径3に40ダメージ。消えている間は領域ダメージを含め無敵。射程12、CD12秒。' }, c: { name: '闇の帳', text: '5秒間、敵から見えなくなる。攻撃しても解除されない。CD20秒。' } },
+    skills: { q: { name: '禍球', text: '射程12の禍々しい球を放ち、ユニット・タワー・障害物を貫通。敵ごとに1回50ダメージ、命中ごとに自身のHPを30回復。CD6秒。' }, e: { name: '魔影転移', text: '指定地点へ1秒間姿を消してからワープし、半径3に40ダメージ。消えている間は領域ダメージを含め無敵。射程12、CD12秒。' }, c: { name: '闇の帳', text: '5秒間、敵から見えなくなる。攻撃しても解除されない。CD20秒。' } },
     stats: { qRange: 12, qDmg: 50, qStun: 0, qCd: 6, qSpeed: 26, qRadius: 0.45, qHeal: 30, eCd: 12, cCd: 20, leapRange: 12, leapHitRange: 3, warpTime: 1, warpDmg: 40, lifeSteal: 0.1 }, robot: {} },
   { id: 'darius', name: 'ダリウス', role: '獣・突進・投げ', color: '#dc9255',
     passive: '巨獣の体：最大HP300。受けるスタンが毎回0.5秒長くなる。通常攻撃は15ダメージの至近距離攻撃で、間隔は1.6秒。',
@@ -488,6 +488,18 @@ function createMatch(solo = false) {
     const abyss = bolt.kind === 'abyss', radius = abyss ? caster.cfg.qRadius : CFG.magicRadius;
     const step = Math.min((abyss ? caster.cfg.qSpeed : CFG.magicSpeed) * DT, bolt.remaining);
     const next = { x: bolt.x + Math.sin(bolt.face) * step, z: bolt.z + Math.cos(bolt.face) * step };
+    if (abyss) {
+      const hits = bolt.hits ||= new Set();
+      const contacts = targets().filter(e => damageable(caster, e) && !hits.has(e.id))
+        .map(e => ({ e, t: intersection(bolt, next, e, e.radius + radius) }))
+        .filter(contact => contact.t !== Infinity).sort((a,b) => a.t-b.t);
+      for (const { e } of contacts) {
+        hits.add(e.id);
+        if (hit(caster, e, caster.cfg.qDmg) > 0) { heal(caster, caster.cfg.qHeal); fx(e, 'abyssHit'); }
+      }
+      advanceProjectile(bolt, next, step);
+      return;
+    }
     let contact = Infinity, victim = null;
     for (const e of (basic ? targets() : units())) {
       if (!damageable(caster, e)) continue;
@@ -501,16 +513,18 @@ function createMatch(solo = false) {
     }
     if (contact !== Infinity) {
       if (victim) {
-        const dealt = hit(caster, victim, basic ? caster.cfg.atkDmg : abyss ? caster.cfg.qDmg : CFG.magicDmg);
-        if (abyss && dealt > 0) heal(caster, caster.cfg.qHeal);
-        if (!basic && !abyss && !victim.dead) {
+        hit(caster, victim, basic ? caster.cfg.atkDmg : CFG.magicDmg);
+        if (!basic && !victim.dead) {
           stun(victim, CFG.magicStun);
           victim.pull = { caster: caster.id, remaining: CFG.magicPull };
         }
-        if (!basic) fx(victim, abyss ? 'abyssHit' : 'magicHit');
+        if (!basic) fx(victim, 'magicHit');
       }
       delete projectiles[bolt.id]; return;
     }
+    advanceProjectile(bolt, next, step);
+  }
+  function advanceProjectile(bolt, next, step) {
     bolt.x = next.x; bolt.z = next.z; bolt.remaining -= step; updateBush(bolt);
     if (bolt.remaining <= 0 || Math.abs(bolt.x) > HALF - 1 || Math.abs(bolt.z) > HALF - 1) delete projectiles[bolt.id];
   }

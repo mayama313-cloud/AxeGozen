@@ -714,7 +714,7 @@ test('Mira wind step doubles movement for three seconds with a ten second cooldo
 
 test('Magic Scout is a fast projectile that pulls the first enemy and stuns for 1.5 seconds without summoning', () => {
   const { match, a, p, q } = setup(false, ['mira', 'alex']); place(p, 0, 0); place(q, 5, 0);
-  a.send('c', aim(q)); assert.equal(p.cCd, 8); assert.equal(Object.keys(match.state.robots).length, 0);
+  a.send('c', aim(q)); assert.equal(p.cCd, 11); assert.equal(Object.keys(match.state.robots).length, 0);
   assert.equal(Object.keys(match.state.projectiles).length, 1); match.tick();
   assert.equal(Object.values(match.state.projectiles)[0].x, 45 / TICK);
   ticks(match, 2); assert.equal(q.stun, 1.5); assert.equal(q.hp, 170); assert.equal(Object.keys(match.state.projectiles).length, 0);
@@ -746,12 +746,12 @@ test('Magic Scout hits minions before a player and cannot pull a target through 
   ticks(match, 10); assert.ok(q.x >= -5.3); assert.equal(q.pull, null);
 });
 
-test('Mira Q reaches twice its previous range and stuns for exactly two seconds', () => {
+test('Mira Q reaches fourteen, deals seven damage and stuns for 1.5 seconds with a nine second cooldown', () => {
   const { match, a, b, p, q } = setup(false, ['mira', 'alex']); place(p, 0, 0); place(q, 10, 4);
   assert.equal(p.cfg.qRange, 14); a.send('q', aim(q));
-  assert.equal(q.hp, 200 - 22); assert.equal(q.stun, 2);
+  assert.equal(q.hp, 193); assert.equal(q.stun, 1.5); assert.equal(p.qCd, 9);
   b.send('move', { x: 0, z: 0 }); assert.equal(q.dest, null);
-  ticks(match, 59); assert.ok(q.stun > 0); match.tick(); assert.equal(q.stun, 0);
+  ticks(match, 44); assert.ok(q.stun > 0); match.tick(); assert.equal(q.stun, 0);
   p.qCd = 0; place(q, 18, 0); const hp = q.hp; a.send('q', aim(q)); assert.equal(q.hp, hp);
 });
 
@@ -832,6 +832,32 @@ test('Lucia Q deals 50 and heals 30 plus passive on character hit, but never on 
   assert.equal(p.hp, 100); assert.equal(q.hp, 150);
 });
 
+test('Lucia Q pierces units, enemy and allied towers and rocks, hitting each enemy exactly once', () => {
+  const { match, a, p, q, robots, towers } = setup(false, ['lucia', 'alex']);
+  place(p, 0, 0); p.hp = 20; place(q, 11, 0);
+  robots.guard = { id: 'guard', owner: q.id, character: 'bastion', slot: 1, x: 3, z: 0, radius: 0.4,
+    hp: 80, maxHp: 80, life: 20, cfg: { ...CFG.robot, speed: 0 }, atkCd: 100, stun: 0, bush: -1 };
+  const enemyTower = towers['t1-2'], allyTower = towers['t0-2'];
+  place(enemyTower, 5, 0); place(allyTower, 7, 0);
+  a.send('q', { x: 12, z: 0 }); ticks(match, TICK);
+  assert.equal(robots.guard.hp, 30); assert.equal(enemyTower.hp, 250);
+  assert.equal(allyTower.hp, 300); assert.equal(q.hp, 150); assert.equal(p.hp, 115);
+  assert.equal(Object.keys(match.state.projectiles).length, 0);
+});
+
+test('Lucia piercing Q credits each lethal hit once and does not damage targets beyond its range', () => {
+  const { match, a, p, q, robots, towers } = setup(false, ['lucia', 'alex']);
+  place(p, 0, 0); place(q, 11, 0); q.hp = 1;
+  robots.guard = { id: 'guard', owner: q.id, character: 'bastion', slot: 1, x: 3, z: 0, radius: 0.4,
+    hp: 40, maxHp: 40, life: 20, cfg: { ...CFG.robot, speed: 0 }, atkCd: 100, stun: 0, bush: -1 };
+  const tower = towers['t1-2'], distant = towers['t1-3'];
+  place(tower, 5, 0); tower.hp = 1; place(distant, 16, 0);
+  a.send('q', { x: 12, z: 0 }); ticks(match, TICK);
+  assert.equal(robots.guard, undefined); assert.equal(tower.dead, true); assert.equal(q.dead, true);
+  assert.equal(p.kills, 1); assert.equal(p.energy, 43); assert.equal(a.killEvents.length, 3);
+  assert.equal(distant.hp, CFG.tower.hp);
+});
+
 test('Lucia Q healing handles minions, damage reduction, lethal hits and maximum HP', () => {
   const { match, a, b, p, q, robots } = setup(false, ['lucia', 'bastion']); place(p, 0, 0); place(q, 5, 0); p.hp = 100;
   b.send('dash'); a.send('q', aim(q)); ticks(match, 6);
@@ -907,11 +933,11 @@ test('Mira basic attacks travel before hitting players and towers without scout 
   place(p, 0, 0); place(q, 6, 0);
   a.send('chase', { id: q.id }); match.tick();
   assert.equal(q.hp, 200); assert.equal(Object.values(match.state.projectiles)[0].kind, 'basic');
-  ticks(match, 5); assert.equal(q.hp, 190); assert.equal(q.stun, 0); assert.equal(q.pull, null);
+  ticks(match, 5); assert.equal(q.hp, 185); assert.equal(q.stun, 0); assert.equal(q.pull, null);
   p.target = null; p.atkCd = 0;
   const tower = towers['t1-2']; place(p, tower.x-6, tower.z);
   a.send('chase', { id: tower.id }); ticks(match, 7);
-  assert.equal(tower.hp, 290);
+  assert.equal(tower.hp, 285);
 });
 
 test('control zones heal only their owner, damage invaders and preserve spawn protection', () => {

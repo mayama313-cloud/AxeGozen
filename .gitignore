@@ -1,1 +1,3 @@
 ﻿ZIPS
+datas/models/**/prepared.json
+scripts/__pycache__/

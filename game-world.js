@@ -69,7 +69,7 @@ function validLanding(from, to, { range, radius, half, blocks, safe, travel = fa
   return [...blocks, safe].every(o => dist(to, o) + 1e-8 >= o.r + radius);
 }
 
-function createMatch(solo = false, cpu = false, { trace = null } = {}) {
+function createMatch(solo = false, cpu = false, { trace = null, policy = null } = {}) {
   let tickNumber = 0;
   const report = data => { if (trace) trace({ tick: tickNumber, time: tickNumber / TICK, ...data }); };
   const inputEvents = new Set(['steer', 'move', 'chase', 'q', 'dash', 'c', 'leap', 'cancelLeap', 'recall']);
@@ -104,6 +104,7 @@ function createMatch(solo = false, cpu = false, { trace = null } = {}) {
   function emitSee(src, ev, data) {
     for (const v of Object.values(players)) if (canSee(v.slot, src)) {
       v.socket.emit(ev, data);
+      if (v.socket === cpuSocket && policy?.observe) policy.observe({ event: ev, data, time: tickNumber / TICK });
       if (trace) report({ kind: 'event', actor: v.id, event: ev, data });
     }
   }
@@ -279,6 +280,7 @@ function createMatch(solo = false, cpu = false, { trace = null } = {}) {
   }
   function reset() {
     report({ kind: 'reset' });
+    if (policy?.reset) policy.reset();
     tickNumber = 0;
     winner = null; elapsed = 0; energyTimer = 0; environment.totals = [0, 0];
     for (const collection of [monsters, energy]) for (const id of Object.keys(collection)) delete collection[id];
@@ -331,6 +333,7 @@ function createMatch(solo = false, cpu = false, { trace = null } = {}) {
     const kill = { id: ++killSeq, time: r2(elapsed), attacker: describe(a), victim: describe(b) };
     for (const viewer of Object.values(players)) {
       viewer.socket.emit('kill', kill);
+      if (viewer.socket === cpuSocket && policy?.observe) policy.observe({ event: 'kill', data: kill, time: tickNumber / TICK });
       if (trace) report({ kind: 'event', actor: viewer.id, event: 'kill', data: kill });
     }
     award(a, b.monster ? (b.large ? 30 : 8) : b.tower ? 25 : isRobot(b) ? 3 : 15);
@@ -577,7 +580,7 @@ function createMatch(solo = false, cpu = false, { trace = null } = {}) {
     if (solo || Object.keys(players).length === 2) phase = 'selecting';
     const init = { id: p.id, slot, cfg: CFG, map: MAP, solo, cpu, characters: CHARACTERS, rulesVersion: 'minion-v1-collection-1' };
     socket.emit('init', init);
-    report({ kind: 'init', actor: p.id, source: socket === cpuSocket ? 'algorithm' : 'human', data: init });
+    report({ kind: 'init', actor: p.id, source: socket === cpuSocket ? policy ? 'model' : 'algorithm' : 'human', data: init });
     listen('selectCharacter', d => {
       if (phase !== 'selecting' || p.confirmed || !characterFor(d?.id)) return;
       p.character = d.id; p.cfg = configFor(d.id); spawn(p);
@@ -764,6 +767,11 @@ function createMatch(solo = false, cpu = false, { trace = null } = {}) {
   function thinkCpu(p) {
     p.thinkTime = decay(p.thinkTime);
     if (p.thinkTime > 0) return;
+    if (policy) {
+      p.thinkTime = 0.1;
+      for (const command of policy(view(p)) || []) if (inputEvents.has(command.event)) cpuSocket.send(command.event, command.data);
+      return;
+    }
     p.thinkTime = 0.2;
     if (p.hp <= p.cfg.maxHp * 0.3) p.retreating = true;
     if (p.hp >= p.cfg.maxHp * 0.9) p.retreating = false;
@@ -818,7 +826,7 @@ function createMatch(solo = false, cpu = false, { trace = null } = {}) {
     if (tickForced(r)) return;
     pullUnit(r);
     if (r.stun > 0) { r.stun = decay(r.stun); r.moving = false; return; }
-    const farming = owner.socket === cpuSocket && cpuFarming(owner);
+    const farming = owner.socket === cpuSocket && !policy && cpuFarming(owner);
     const marching = isAlexMinion(r) && !farming;
     let objective = towers[r.objective];
     if (marching && (!objective || objective.dead)) {
@@ -852,7 +860,8 @@ function createMatch(solo = false, cpu = false, { trace = null } = {}) {
     pushOut(r); updateBush(r);
   }
   function tickPlayer(p) {
-    if (p.socket === cpuSocket) observeCpu(p);
+    if (p.socket === cpuSocket && !policy) observeCpu(p);
+    if (p.socket === cpuSocket && policy?.observeState) policy.observeState(view(p));
     for (const cd of ['atkCd', 'qCd', 'eCd', 'cCd']) p[cd] = Math.max(0, p[cd] - DT);
     if (p.dead) { p.respawn = decay(p.respawn); if (p.respawn <= 0) spawn(p); return; }
     p.moving = false;
@@ -891,8 +900,8 @@ function createMatch(solo = false, cpu = false, { trace = null } = {}) {
     } else {
       let goal = p.dest;
       if (foe) {
-        if (dist(p, foe) <= reach(p.cfg.atkRange, foe) && (p.socket !== cpuSocket || p.character !== 'mira' || cpuShotClear(p, foe))) {
-          if (p.socket === cpuSocket) recordInput(p, 'chase', { id: foe.id }, 'derived');
+        if (dist(p, foe) <= reach(p.cfg.atkRange, foe) && (p.socket !== cpuSocket || policy || p.character !== 'mira' || cpuShotClear(p, foe))) {
+          if (p.socket === cpuSocket && !policy) recordInput(p, 'chase', { id: foe.id }, 'derived');
           goal = null; p.face = ang(p, foe);
           if (p.atkCd <= 0) { p.atkCd = p.cfg.atkCd; attack(p, foe, p.cfg.atkDmg); }
         } else if (!p.keys) goal = foe;
@@ -902,7 +911,7 @@ function createMatch(solo = false, cpu = false, { trace = null } = {}) {
         if (!foe || dist(p, foe) > reach(p.cfg.atkRange, foe)) p.face = Math.atan2(dir.x, dir.z);
       }
       if (goal) {
-        if (p.socket === cpuSocket) {
+        if (p.socket === cpuSocket && !policy) {
           march(p, goal, foe ? reach(p.cfg.atkRange, foe) : goal.range || 0.2, speed);
           pushOut(p); updateBush(p);
           if (protectedUnit(p)) p.hp = Math.min(p.cfg.maxHp, p.hp + CFG.safeHeal * DT);

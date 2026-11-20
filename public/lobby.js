@@ -1,6 +1,6 @@
 (() => {
   const el = id => document.getElementById(id), session = window.gameSession;
-  let selfId = null;
+  let selfId = null, model = null, useModel = false;
   function screen(name) {
     el('lobby').hidden = name === 'game';
     el('hud').hidden = name !== 'game';
@@ -19,7 +19,24 @@
       card.appendChild(pick); el('characterCards').appendChild(card);
     }
   }
-  el('startMatch').addEventListener('click', () => session.start(document.querySelector('input[name="mode"]:checked').value));
+  el('importMinionModel').addEventListener('change', async () => {
+    const file = el('importMinionModel').files[0]; if (!file) return;
+    try {
+      const loaded = window.MinionPolicy.validate(JSON.parse(await file.text()));
+      if (loaded.rulesVersion !== 'minion-v1-collection-1') throw Error('ゲームのルール版とモデルが一致しません。');
+      model = loaded;
+      el('cpuController').options[1].disabled = false;
+      el('cpuController').options[1].textContent = loaded.modelName;
+      el('cpuController').value = 'model';
+      el('minionModelStatus').textContent = `${loaded.modelName} を読み込みました。対応キャラ：${loaded.characters.map(id => ArenaWorld.characterFor(id)?.name || id).join('、')}。CPU対戦で使用できます。`;
+    } catch (error) { el('minionModelStatus').textContent = error.message; }
+  });
+  el('startMatch').addEventListener('click', () => {
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+    useModel = mode === 'cpu' && el('cpuController').value === 'model' && !!model;
+    session.start(mode, { model: useModel ? model : null });
+    if (useModel) session.emit('selectCpuCharacter', { id: model.characters[0] });
+  });
   for (const id of ['cancelMatch', 'leaveSelection', 'returnLobby']) el(id).addEventListener('click', () => session.stop());
   el('confirmCharacter').addEventListener('click', () => session.emit('confirmCharacter'));
   el('cpuCharacter').addEventListener('change', () => session.emit('selectCpuCharacter', { id: el('cpuCharacter').value }));
@@ -35,6 +52,7 @@
     el('cpuCharacterPicker').hidden = !data.cpu;
     el('cpuCharacter').replaceChildren();
     for (const character of data.characters) {
+      if (useModel && !model.characters.includes(character.id)) continue;
       const option = document.createElement('option');
       option.value = character.id; option.textContent = character.name;
       el('cpuCharacter').appendChild(option);
@@ -59,7 +77,7 @@
     el('confirmCharacter').disabled = !me.character || me.confirmed;
     el('confirmCharacter').textContent = me.confirmed ? '相手の準備を待っています…' : state.solo || state.cpu ? 'このキャラで試合開始' : '選択を確定・準備完了';
     el('selectionStatus').textContent = me.confirmed ? '準備完了。双方が確定すると試合が始まります。' : 'Q・E・Cとパッシブを確認して、出撃するキャラを選んでください。';
-    el('opponentSelection').textContent = state.solo ? 'オフライン：1人用タワー攻略' : `${state.cpu ? 'CPU' : '相手'}：${ArenaWorld.characterFor(opponent?.character)?.name || '選択中'}${opponent?.confirmed ? '（準備完了）' : ''}`;
+    el('opponentSelection').textContent = state.solo ? 'オフライン：1人用タワー攻略' : `${state.cpu ? useModel ? 'ミニオン v1' : 'CPU' : '相手'}：${ArenaWorld.characterFor(opponent?.character)?.name || '選択中'}${opponent?.confirmed ? '（準備完了）' : ''}`;
   });
   function failure(message) { screen('matchmaking'); el('matchingTitle').textContent = '試合を続けられません'; el('matchingMessage').textContent = message; }
   session.on('matchEnded', data => failure(data.reason));

@@ -38,7 +38,7 @@
   function dataset(record, includeAlgorithm = false) {
     const output = [];
     for (const [actor, info] of Object.entries(record.actors)) {
-      if (info.source === 'algorithm' && !includeAlgorithm) continue;
+      if (info.source !== 'human' && !includeAlgorithm) continue;
       const ranges = record.ranges.filter(r => r.actor === actor);
       if (!ranges.length) continue;
       const frames = record.entries.filter(e => e.kind === 'frame' && e.views[actor]);
@@ -64,7 +64,7 @@
   function validate(record) {
     if (record?.schema !== SCHEMA || typeof record.id !== 'string' || !record.id || typeof record.createdAt !== 'string' || !record.actors || !Object.keys(record.actors).length || !Array.isArray(record.entries) || !Array.isArray(record.ranges) || !Number.isFinite(record.duration) || record.duration < 0) throw Error('対応していない記録ファイルです。');
     if (!record.entries.some(e => e.kind === 'frame')) throw Error('再生できるフレームがありません。');
-    for (const [id, info] of Object.entries(record.actors)) if (!info.init?.map?.spawns || info.init.id !== id || !['human', 'algorithm'].includes(info.source)) throw Error('視点情報が壊れています。');
+    for (const [id, info] of Object.entries(record.actors)) if (!info.init?.map?.spawns || info.init.id !== id || !['human', 'algorithm', 'model'].includes(info.source)) throw Error('視点情報が壊れています。');
     let time = 0;
     for (let i = 0; i < record.entries.length; i++) {
       const e = record.entries[i];

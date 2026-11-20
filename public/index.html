@@ -135,6 +135,8 @@
       <label class="mode-option"><input type="radio" name="mode" value="online"><strong>オンライン</strong><p>参加中のプレイヤーと1対1でマッチング。2人が準備できたら開戦します。</p></label>
     </div>
     <button id="startMatch" type="button" class="primary">試合開始</button>
+    <p><label>CPUの操作 <select id="cpuController"><option value="algorithm">アルゴリズム</option><option value="model" disabled>ミニオン v1（モデルを読み込んでください）</option></select></label>
+    <label>学習モデルを読み込む <input id="importMinionModel" type="file" accept=".json,application/json"></label><br><span id="minionModelStatus" role="status"></span></p>
     <p><label><input id="recordTraining" type="checkbox" checked> ミニオン v1 の教師データを記録（CPU戦・オフライン）</label><br><small>終了時にこのブラウザーへ保存します。1試合20分まで。学習に使う区間は後で選択できます。</small></p>
     <button id="openRecordings" type="button">記録・リプレイ</button>
   </section>
@@ -211,6 +213,7 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="/game-world.js"></script>
 <script src="training-data.js"></script>
+<script src="minion-policy.js"></script>
 <script src="session.js"></script>
 <script src="audio.js"></script>
 <script src="skill-aim.js"></script>

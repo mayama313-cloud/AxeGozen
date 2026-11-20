@@ -25,13 +25,14 @@
       if (network) { network.removeAllListeners(); network.disconnect(); network = null; }
       dispatch('lobby');
     },
-    start(mode) {
+    start(mode, { model = null } = {}) {
       session.stop(); running = true; session.mode = mode;
       window.trainingRecorder?.newSession();
       dispatch('starting', { mode });
       if (mode === 'offline' || mode === 'cpu') {
         const listeners = new Map(), match = ArenaWorld.createMatch(mode === 'offline', mode === 'cpu', {
           trace: window.trainingRecorder?.enabled ? entry => window.trainingRecorder.consume(entry) : null,
+          policy: mode === 'cpu' && model ? window.MinionPolicy.controller(model) : null,
         });
         local = {
           id: 'offline-player',

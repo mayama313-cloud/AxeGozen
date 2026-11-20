@@ -7,7 +7,7 @@ const CFG = {
   robot: { hp: 40, dmg: 5, atkCd: 0.7, atkRange: 1.8, speed: 7, radius: 0.4, aggro: 9, leash: 14, life: 20, max: 5, batch: 3 },
   safeRadius: 4, safeHeal: 80,
   tower: { hp: 300, radius: 1.1, count: 5, range: 7, dmg: 5, atkCd: 1 },
-  recallTime: 5, inputTimeout: 0.35,
+  recallTime: 3, inputTimeout: 0.35,
   leapRange: 8, leapTime: 0.45, leapDmg: 45, leapStun: 1, leapHitRange: 2.4,
   windTime: 3, windMultiplier: 2,
   magicRange: 14, magicSpeed: 45, magicRadius: 0.35, magicPull: 6, magicStun: 1.5, magicDmg: 30,

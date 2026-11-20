@@ -61,6 +61,10 @@ node scripts/minion-v1.js smoke
 ```
 
 `train` は原本との整合性検査、学習用データの準備、Python/PyTorchでの学習、モデル保存、JavaScript推論の照合、60秒のゲーム内動作確認を順に実行する。
+Git LFS管理のファイルを取得した後は、実体が作業フォルダーに展開されていることを確認する。
+`version https://git-lfs.github.com/spec/v1`で始まる小さなファイルは、JSONではなくLFSの参照ファイル。
+ローカルの実体は `git lfs checkout "datas/teachers/*.jsonl" "datas/replays/*.json"` で展開できる。
+実体がローカルにない場合は `git lfs pull` で取得する。読み込み時にもLFS参照を検出し、対象パスと復元コマンドを表示する。
 `--python`、`--teachers`、`--replays`、`--output` で実行ファイルや入出力先を変更できる。
 同じ試合・視点・時刻を複数のJSONLから読み込むと、重複学習を避けるため停止する。
 ルール版が混在する場合も停止する。CPU由来の教師データは既定で除外し、明示的に使う場合だけ `--include-cpu` を付ける。

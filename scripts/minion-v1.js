@@ -7,6 +7,7 @@ const { isDeepStrictEqual } = require('node:util');
 const Policy = require('../public/minion-policy');
 const { validate } = require('../public/training-data');
 const { createMatch, TICK } = require('../game-world');
+const { preflight, parseJSON, readJSON } = require('./minion-input');
 const root = path.resolve(__dirname, '..');
 const arg = (name, fallback) => { const i = process.argv.indexOf('--' + name); return i < 0 ? fallback : process.argv[i + 1]; };
 const output = path.resolve(arg('output', path.join(root, 'datas/models/minion-v1')));
@@ -17,9 +18,13 @@ async function prepare() {
   const teacherDir = path.resolve(arg('teachers', path.join(root, 'datas/teachers'))), replayDir = path.resolve(arg('replays', path.join(root, 'datas/replays')));
   const teachers = fs.readdirSync(teacherDir).filter(f => f.endsWith('.jsonl')).sort();
   if (!teachers.length) throw Error('教師データJSONLがありません。');
+  const replays = fs.readdirSync(replayDir).filter(f => f.endsWith('.json')).sort();
+  // 大きな原本を読む前に、LFSポインターや空ファイルを確認する。
+  for (const file of teachers) preflight(path.join(teacherDir, file));
+  for (const file of replays) preflight(path.join(replayDir, file));
   const rawIndex = new Map();
-  for (const file of fs.readdirSync(replayDir).filter(f => f.endsWith('.json'))) {
-    const full = path.join(replayDir, file), raw = validate(JSON.parse(fs.readFileSync(full, 'utf8')));
+  for (const file of replays) {
+    const full = path.join(replayDir, file), raw = validate(readJSON(full));
     if (rawIndex.has(raw.id)) throw Error('同じ試合IDの原本が複数あります。');
     rawIndex.set(raw.id, { full });
   }
@@ -28,14 +33,15 @@ async function prepare() {
   let init, rulesVersion;
   for (const name of teachers) {
     const file = path.join(teacherDir, name), reader = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
-    let manifest, raw, frames, previousFrames, records = 0, accepted = 0, pendingActions = [], selectedSince = 0, lastActor;
+    let manifest, raw, frames, previousFrames, records = 0, accepted = 0, pendingActions = [], selectedSince = 0, lastActor, lineNumber = 0;
     for await (const line of reader) {
+      lineNumber++;
       if (!line.trim()) continue;
-      const sample = JSON.parse(line);
+      const sample = parseJSON(line, file, lineNumber);
       if (!manifest) {
         manifest = sample;
         if (manifest.kind !== 'manifest' || manifest.schema !== 'axe-gozen-imitation/1' || !rawIndex.has(manifest.episodeId)) throw Error('対応する原本がありません: ' + name);
-        raw = JSON.parse(fs.readFileSync(rawIndex.get(manifest.episodeId).full, 'utf8'));
+        raw = readJSON(rawIndex.get(manifest.episodeId).full);
         frames = raw.entries.filter(e => e.kind === 'frame');
         previousFrames = new Map();
         for (let i = 1; i < frames.length; i++) previousFrames.set(`${frames[i].tick}:${frames[i].time}`, i);
@@ -92,7 +98,7 @@ async function prepare() {
 }
 
 function smoke() {
-  const model = Policy.validate(JSON.parse(fs.readFileSync(path.join(output, 'model.json'), 'utf8')));
+  const model = Policy.validate(readJSON(path.join(output, 'model.json')));
   const report = { model: model.modelName, games: [], limitation: 'functional smoke test; no strength/generalization claim' };
   for (const character of model.characters) {
     const control = Policy.controller(model), handlers = {}, counts = {}, positions = [];
@@ -116,7 +122,7 @@ function smoke() {
     const bot = match.state.players['cpu-player'];
     report.games.push({ character, seconds: 60, decisions, commands: counts, final: { x: bot.x, z: bot.z, phase: lastState.phase }, lastInput: lastInput?.event });
   }
-  const probe = JSON.parse(fs.readFileSync(path.join(output, 'parity.json'), 'utf8'));
+  const probe = readJSON(path.join(output, 'parity.json'));
   const actual = Policy.forward(model, probe.x);
   const error = Math.max(...actual.logits.map((n, i) => Math.abs(n - probe.logits[i])), ...actual.points.map((n, i) => Math.abs(n - probe.points[i])));
   if (error > 1e-4) throw Error('PythonとJavaScriptの推論が一致しません: ' + error);

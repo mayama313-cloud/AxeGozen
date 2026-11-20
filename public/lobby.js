@@ -22,6 +22,7 @@
   el('startMatch').addEventListener('click', () => session.start(document.querySelector('input[name="mode"]:checked').value));
   for (const id of ['cancelMatch', 'leaveSelection', 'returnLobby']) el(id).addEventListener('click', () => session.stop());
   el('confirmCharacter').addEventListener('click', () => session.emit('confirmCharacter'));
+  el('cpuCharacter').addEventListener('change', () => session.emit('selectCpuCharacter', { id: el('cpuCharacter').value }));
   session.on('lobby', () => { selfId = null; screen('lobbyHome'); });
   session.on('starting', ({ mode }) => {
     screen('matchmaking');
@@ -29,13 +30,26 @@
     el('matchingMessage').textContent = mode === 'online' ? '参加した順にマッチングします。相手が見つかるまでお待ちください。' : 'キャラクターを選択して始めましょう。';
     el('restart').hidden = mode === 'online';
   });
-  session.on('init', data => { selfId = data.id; renderCards(data.characters); });
+  session.on('init', data => {
+    selfId = data.id; renderCards(data.characters);
+    el('cpuCharacterPicker').hidden = !data.cpu;
+    el('cpuCharacter').replaceChildren();
+    for (const character of data.characters) {
+      const option = document.createElement('option');
+      option.value = character.id; option.textContent = character.name;
+      el('cpuCharacter').appendChild(option);
+    }
+  });
   session.on('state', state => {
     if (state.phase === 'playing' || state.phase === 'finished') { screen('game'); return; }
     if (state.phase !== 'selecting') return;
     screen('characterSelect');
     const me = state.players.find(p => p.id === selfId), opponent = state.players.find(p => p.id !== selfId);
     if (!me) return;
+    if (state.cpu) {
+      el('cpuCharacter').value = opponent?.character || 'alex';
+      el('cpuCharacter').disabled = me.confirmed;
+    }
     for (const card of el('characterCards').children) {
       const chosen = card.dataset.id === me.character;
       card.classList.toggle('selected', chosen);

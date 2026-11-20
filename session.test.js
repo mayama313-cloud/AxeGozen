@@ -32,6 +32,11 @@ test('CPU mode starts locally with a ready opponent and restarts both players', 
   assert.equal(state.cpu, true); assert.equal(state.solo, false);
   assert.equal(state.phase, 'selecting'); assert.equal(state.players.length, 2);
   assert.equal(state.players.find(p => p.id === 'cpu-player').confirmed, true);
+  for (const id of ['mira', 'bastion', 'lucia', 'darius', 'alex']) {
+    session.emit('selectCpuCharacter', { id }); interval();
+    assert.equal(state.players.find(p => p.id === 'cpu-player').character, id);
+    assert.equal(state.phase, 'selecting');
+  }
   session.emit('selectCharacter', { id: 'mira' }); session.emit('confirmCharacter');
   for (let i = 0; i < 60; i++) interval();
   assert.equal(state.phase, 'playing');

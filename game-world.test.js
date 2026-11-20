@@ -25,14 +25,54 @@ function setup(solo = false, characters = ['alex', 'alex']) {
 }
 const ticks = (match, n) => { for (let i = 0; i < n; i++) match.tick(); };
 
-function cpuSetup() {
+function cpuSetup(character = 'alex') {
   const match = createMatch(false, true), a = socket('human');
   match.connect(a);
+  a.send('selectCpuCharacter', { id: character });
   a.send('selectCharacter', { id: 'alex' }); a.send('confirmCharacter');
   match.state.environment.enabled = false;
   for (const tower of Object.values(match.state.towers)) tower.atkCd = 10000;
   return { match, a, human: match.state.players.human, bot: match.state.players['cpu-player'] };
 }
+
+for (const character of CHARACTERS) {
+  test(`CPU ${character.id} can be selected, uses Q/C in combat and retains its character after restart`, () => {
+    const { match, a, human, bot } = cpuSetup(character.id);
+    assert.equal(bot.character, character.id);
+    assert.equal(bot.cfg.maxHp, configFor(character.id).maxHp);
+    place(bot, 0, 8); place(human, 1, 8);
+    match.tick();
+    assert.ok(bot.qCd > 0); assert.ok(bot.cCd > 0);
+    if (['alex', 'bastion'].includes(character.id)) assert.ok(Object.values(match.state.robots).some(r => r.owner === bot.id));
+    if (character.id === 'lucia') assert.ok(bot.stealth > 0);
+    if (character.id === 'darius') assert.equal(bot.grabbing, human.id);
+    ticks(match, 10); assert.ok(human.hp < human.cfg.maxHp || human.held);
+    a.send('selectCpuCharacter', { id: 'mira' }); assert.equal(bot.character, character.id);
+    a.send('restart'); assert.equal(bot.character, character.id); assert.equal(bot.hp, bot.cfg.maxHp);
+  });
+
+  test(`CPU ${character.id} uses its own E without bypassing movement locks`, () => {
+    const { match, human, bot } = cpuSetup(character.id);
+    place(bot, 0, 8); place(human, 0, character.id === 'mira' ? 17 : 14);
+    if (character.id === 'bastion') bot.hp = bot.cfg.maxHp * 0.7;
+    match.tick(); assert.ok(bot.eCd > 0);
+    if (character.id === 'alex') assert.ok(bot.leap);
+    if (character.id === 'mira') assert.ok(bot.speedBoost > 0);
+    if (character.id === 'bastion') assert.ok(bot.shield > 0);
+    if (character.id === 'lucia') { assert.ok(bot.warp); assert.equal(bot.x, 0); assert.equal(bot.z, 8); }
+    if (character.id === 'darius') { assert.ok(bot.charge); assert.equal(bot.x, 0); assert.equal(bot.z, 8); }
+  });
+}
+
+test('CPU character selection rejects invalid IDs and is unavailable outside CPU mode', () => {
+  const match = createMatch(false, true), a = socket('human');
+  match.connect(a);
+  const bot = match.state.players['cpu-player'];
+  a.send('selectCpuCharacter', { id: 'invalid' }); assert.equal(bot.character, 'alex');
+  a.send('selectCpuCharacter', { id: 'lucia' }); assert.equal(bot.character, 'lucia'); assert.equal(bot.confirmed, true);
+  const online = setup();
+  online.a.send('selectCpuCharacter', { id: 'lucia' }); assert.equal(online.q.character, 'alex');
+});
 
 test('CPU attacks visible enemies with skills, respects cooldowns and ignores hidden enemies', () => {
   const { match, human, bot } = cpuSetup();
@@ -65,9 +105,10 @@ test('CPU retreats to heal, resumes combat and respawns after death', () => {
   ticks(match, 4); assert.equal(bot.dead, false); assert.equal(bot.hp, bot.cfg.maxHp);
 });
 
-test('CPU completes a full match with tower retaliation and territory damage enabled', () => {
+for (const character of CHARACTERS) test(`CPU ${character.id} completes a full match with tower retaliation and territory damage enabled`, () => {
   const match = createMatch(false, true), a = socket('human');
   match.connect(a);
+  a.send('selectCpuCharacter', { id: character.id });
   a.send('selectCharacter', { id: 'mira' }); a.send('confirmCharacter');
   for (let i = 0; i < TICK * 600; i++) {
     match.tick();
@@ -75,6 +116,68 @@ test('CPU completes a full match with tower retaliation and territory damage ena
   }
   assert.equal(a.events.state.phase, 'finished');
   assert.equal(a.events.state.winner, 1);
+});
+
+for (const character of CHARACTERS) test(`CPU ${character.id} farms all three home camps before invading`, () => {
+  const match = createMatch(false, true), a = socket('human');
+  match.connect(a);
+  a.send('selectCpuCharacter', { id: character.id });
+  a.send('selectCharacter', { id: 'alex' }); a.send('confirmCharacter');
+  const bot = match.state.players['cpu-player'];
+  for (let i = 0; i < TICK * 180 && bot.cpuFarmed.size < 3; i++) {
+    match.tick();
+    assert.ok(bot.x >= bot.z, 'CPU must stay out of the enemy territory during opening farming');
+    for (const t of Object.values(match.state.towers)) if (t.slot === 0) assert.equal(t.hp, CFG.tower.hp);
+    for (const r of Object.values(match.state.robots)) if (r.owner === bot.id) assert.ok(r.x >= r.z);
+  }
+  assert.equal(bot.cpuFarmed.size, 3); assert.ok(bot.energy >= 24);
+  assert.ok([...bot.cpuFarmed].every(id => match.state.camps.find(c => c.id === id).x > 0));
+  // 復活ではファーム実績を維持し、試合のやり直しでは消す。
+  bot.dead = true; bot.respawn = 0.01; match.tick(); assert.equal(bot.cpuFarmed.size, 3);
+  a.send('restart'); assert.equal(bot.cpuFarmed.size, 0); assert.equal(bot.cpuMemory, null);
+});
+
+test('CPU waits for its home monsters to spawn and defends against an invader while farming', () => {
+  const { match, human, bot } = cpuSetup();
+  match.state.environment.enabled = true;
+  ticks(match, TICK * 4);
+  assert.equal(bot.cpuFarmed.size, 0); assert.equal(bot.target, null);
+  assert.ok(bot.dest?.id.startsWith('camp-') || bot.x > bot.z);
+  place(bot, 0, -8); place(human, 1, -8); bot.thinkTime = 0;
+  match.tick(); assert.equal(bot.target, human.id); assert.ok(human.hp < human.cfg.maxHp);
+});
+
+test('CPU searches a bush after seeing an enemy enter, reacquires it and remembers repeated entries', () => {
+  const { match, a, human, bot } = cpuSetup();
+  place(bot, 14, -12); place(human, 18.8, -12);
+  Object.assign(bot, { qCd: 1000, cCd: 1000, eCd: 1000, atkCd: 1000 });
+  match.tick(); assert.equal(bot.target, human.id); assert.equal(bot.cpuMemory.id, human.id);
+  a.send('move', { x: 23, z: -12 });
+  ticks(match, 7);
+  assert.equal(bot.target, null); assert.equal(bot.dest.id, 'search-' + human.id);
+  assert.deepEqual(bot.cpuMemory.search, { x: 22, z: -12 });
+  const previousX = bot.x;
+  ticks(match, TICK * 2);
+  assert.ok(bot.x > previousX); assert.equal(bot.target, human.id);
+  assert.equal(bot.bush, human.bush);
+  // 同じ場所から再び出入りしても、タワーへ目標を切り替えずに捜索する。
+  place(bot, 14, -12); place(human, 18.8, -12); bot.thinkTime = 0;
+  match.tick(); a.send('move', { x: 23, z: -12 }); ticks(match, 7);
+  assert.equal(bot.dest?.id, 'search-' + human.id);
+});
+
+test('CPU memory never tracks unseen movement, expires and ignores enemies it never saw', () => {
+  const { match, a, human, bot } = cpuSetup();
+  Object.assign(bot, { qCd: 1000, cCd: 1000, eCd: 1000, atkCd: 1000 });
+  place(bot, 14, -12); place(human, 22, -12);
+  match.tick(); assert.equal(human.bush >= 0, true); assert.equal(bot.cpuMemory, null);
+  place(human, 18.8, -12); bot.thinkTime = 0; match.tick();
+  bot.stun = 10;
+  a.send('move', { x: 23, z: -12 }); ticks(match, 8);
+  const snapshot = JSON.stringify(bot.cpuMemory);
+  place(human, -4, 20); human.bush = 0;
+  ticks(match, TICK); assert.equal(JSON.stringify(bot.cpuMemory), snapshot);
+  ticks(match, TICK * 8); assert.equal(bot.cpuMemory, null);
 });
 const aim = e => ({ x: e.x, z: e.z });
 function place(e, x, z) { Object.assign(e, { x, z, dest: null, target: null, bush: -1 }); }

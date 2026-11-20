@@ -209,7 +209,7 @@ function createMatch(solo = false, cpu = false) {
       let best = 0;
       for (let i = 1; i < open.length; i++) if (open[i].score < open[best].score) best = i;
       const current = open.splice(best, 1)[0], id = key(current.x, current.z);
-      if (dist(current, goal) <= stop) {
+      if (dist(current, goal) <= stop && !(r.socket === cpuSocket && r.character === 'mira' && unit(goal.id) && !cpuShotClear({ ...current, slot: r.slot }, goal))) {
         const path = [];
         for (let n = current; n; n = n.parent) path.unshift({ x: n.x, z: n.z });
         return path;
@@ -232,7 +232,7 @@ function createMatch(solo = false, cpu = false) {
     const blocks = navigationBlocks(r), d = dist(r, goal), stop = Math.max(0.1, range - 0.12);
     const approach = { x: goal.x + (r.x - goal.x) / d * stop, z: goal.z + (r.z - goal.z) / d * stop };
     let waypoint = approach;
-    if (!clearSegment(r, approach, r.radius, blocks)) {
+    if (!clearSegment(r, approach, r.radius, blocks) || (r.socket === cpuSocket && r.character === 'mira' && unit(goal.id) && !cpuShotClear({ ...approach, slot: r.slot }, goal))) {
       r.pathAge = (r.pathAge || 0) + DT;
       const changedTarget = r.pathTarget !== goal.id;
       const movedTarget = r.pathGoal && dist(r.pathGoal, goal) > 1;
@@ -260,6 +260,7 @@ function createMatch(solo = false, cpu = false) {
   }
   function spawn(p) {
     releaseHold(p); p.radius = p.cfg.radius;
+    p.cpuMemory = null;
     Object.assign(p, SPAWNS[p.slot], { hp: p.cfg.maxHp, dest: null, target: null, dead: false, dashT: 0, moving: false, respawn: 0, stun: 0, recall: 0, keys: null, inputT: 0, shield: 0, aiming: false, leap: null, air: 0, speedBoost: 0, pull: null, stealth: 0, warp: null, charge: null, grabbing: null, held: null, flight: null, retreating: false, thinkTime: 0, path: [], pathTarget: null, pathGoal: null, pathAge: 0 });
     p.face = ang(p, { x: 0, z: 0 });
     updateBush(p);
@@ -279,7 +280,7 @@ function createMatch(solo = false, cpu = false) {
       }
     }
     for (const p of Object.values(players)) {
-      Object.assign(p, { energy: 0, kills: 0, atkCd: 0, qCd: 0, eCd: 0, cCd: 0 });
+      Object.assign(p, { energy: 0, kills: 0, atkCd: 0, qCd: 0, eCd: 0, cCd: 0, cpuFarmed: new Set() });
       spawn(p);
     }
   }
@@ -317,6 +318,8 @@ function createMatch(solo = false, cpu = false) {
     for (const viewer of Object.values(players)) viewer.socket.emit('kill', kill);
     award(a, b.monster ? (b.large ? 30 : 8) : b.tower ? 25 : isRobot(b) ? 3 : 15);
     if (b.monster) {
+      const farmer = isRobot(a) ? players[a.owner] : players[a.id];
+      if (farmer?.socket === cpuSocket && !b.large && inControl(b.home, farmer.slot)) farmer.cpuFarmed.add(b.home.id);
       delete monsters[b.id];
       const camp = camps.find(c => c.id === b.id);
       if (camp) camp.timer = b.large ? 45 : 30;
@@ -554,6 +557,14 @@ function createMatch(solo = false, cpu = false) {
       if (phase !== 'selecting' || p.confirmed || !characterFor(d?.id)) return;
       p.character = d.id; p.cfg = configFor(d.id); spawn(p);
     });
+    socket.on('selectCpuCharacter', d => {
+      if (!cpu || socket === cpuSocket || phase !== 'selecting' || p.confirmed || !characterFor(d?.id)) return;
+      const bot = players[cpuSocket?.id];
+      if (!bot) return;
+      bot.confirmed = false;
+      cpuSocket.send('selectCharacter', { id: d.id });
+      cpuSocket.send('confirmCharacter');
+    });
     socket.on('confirmCharacter', () => {
       if (phase !== 'selecting' || !p.character) return;
       p.confirmed = true;
@@ -674,6 +685,56 @@ function createMatch(solo = false, cpu = false) {
     }
     return true;
   }
+  function cpuShotClear(p, foe) {
+    const blocks = [...OBST, ...Object.values(towers).filter(t => !t.dead && t !== foe).map(t => ({ ...t, r: t.radius })),
+      { ...SPAWNS[1 - p.slot], r: CFG.safeRadius }];
+    return clearSegment(p, foe, CFG.magicRadius, blocks);
+  }
+  function cpuMobility(p, foe) {
+    if (p.eCd > 0) return;
+    const d = foe ? dist(p, foe) : Infinity;
+    if (p.character === 'mira') {
+      if (p.retreating || (foe && d > p.cfg.atkRange && d < 18)) cpuSocket.send('dash');
+    } else if (p.character === 'bastion') {
+      if (foe && d < 8 && p.hp < p.cfg.maxHp * 0.85) cpuSocket.send('dash');
+    } else if (p.retreating && p.character === 'lucia') {
+      const home = SPAWNS[p.slot], distance = dist(p, home);
+      if (distance < 3) return;
+      const step = Math.min(p.cfg.leapRange, distance);
+      const to = { x: p.x + (home.x - p.x) / distance * step, z: p.z + (home.z - p.z) / distance * step };
+      if (validDestination(p, to)) cpuSocket.send('dash', to);
+    } else if (foe && !foe.dead && d > p.cfg.atkRange + 1 && d < p.cfg.leapRange) {
+      if (p.character === 'alex' && !foe.tower && validDestination(p, foe)) {
+        if (!p.aiming) cpuSocket.send('dash');
+        cpuSocket.send('leap', foe);
+      } else if (p.character === 'darius' && !foe.tower && cpuShotClear(p, foe) && validDestination(p, foe)) {
+        cpuSocket.send('dash', foe);
+      } else if (p.character === 'lucia') {
+        const stop = p.radius + foe.radius + 0.2;
+        const to = { x: foe.x + (p.x - foe.x) / d * stop, z: foe.z + (p.z - foe.z) / d * stop };
+        if (validDestination(p, to)) cpuSocket.send('dash', to);
+      }
+    }
+  }
+  const cpuCamps = p => camps.filter(c => !c.large && inControl(c, p.slot));
+  const cpuFarming = p => environment.enabled && cpuCamps(p).some(c => !p.cpuFarmed.has(c.id));
+  function observeCpu(p) {
+    if (p.dead) { p.cpuMemory = null; return; }
+    const seen = Object.values(players).filter(e => e !== p && !e.dead && canSee(p.slot, e) && dist(p, e) <= 12)
+      .sort((a, b) => dist(p, a) - dist(p, b))[0];
+    if (seen) {
+      p.cpuMemory = { id: seen.id, x: seen.x, z: seen.z, seenAt: elapsed, search: null };
+    } else if (p.cpuMemory) {
+      const memory = p.cpuMemory;
+      if (elapsed - memory.seenAt > 8) { p.cpuMemory = null; return; }
+      // 隠れた敵の現在座標は使わず、最後に見た位置に接するブッシュを調べる。
+      if (!memory.search) {
+        const bush = BUSHES.find(b => dist(memory, b) <= b.r + 0.8);
+        memory.search = bush ? { x: bush.x, z: bush.z } : { x: memory.x, z: memory.z };
+        memory.searchRange = bush ? Math.max(0.5, bush.r - 0.8) : 1.5;
+      }
+    }
+  }
   // CPUも人間と同じ入力処理を通し、射程・視界・クールダウンを守る。
   function thinkCpu(p) {
     p.thinkTime = decay(p.thinkTime);
@@ -684,20 +745,43 @@ function createMatch(solo = false, cpu = false) {
     if (p.retreating) {
       p.target = null;
       p.dest = dist(p, SPAWNS[p.slot]) > 2 ? { ...SPAWNS[p.slot], id: 'home' } : null;
+      if (p.character === 'lucia' && p.stealth <= 0 && !protectedUnit(p)) cpuSocket.send('c');
+      cpuMobility(p, null);
       return;
     }
     const nearest = list => list.sort((a, b) => dist(p, a) - dist(p, b))[0];
-    const foe = nearest(units().filter(e => !e.monster && attackable(p, e) && dist(p, e) < (isRobot(e) ? 7 : 12)))
-      || nearest(Object.values(towers).filter(t => attackable(p, t)));
+    const farming = cpuFarming(p);
+    let foe = nearest(units().filter(e => !e.monster && attackable(p, e) && dist(p, e) < (farming || isRobot(e) ? 7 : 12)
+      && (!farming || inControl(e, p.slot))));
+    const memory = p.cpuMemory;
+    if (!foe && memory?.search && (!farming || inControl(memory.search, p.slot))) {
+      if (dist(p, memory.search) > memory.searchRange) {
+        p.target = null; p.dest = { ...memory.search, id: 'search-' + memory.id, range: memory.searchRange };
+        return;
+      }
+      p.cpuMemory = null;
+    }
+    if (!foe && farming) {
+      const available = cpuCamps(p).filter(c => !p.cpuFarmed.has(c.id));
+      const current = monsters[p.target];
+      foe = current && available.some(c => c.id === current.home.id) && attackable(p, current) ? current
+        : nearest(Object.values(monsters).filter(m => available.some(c => c.id === m.home.id) && attackable(p, m)));
+      if (!foe) {
+        const camp = nearest(available);
+        p.target = null; p.dest = camp && dist(p, camp) > 2 ? { x: camp.x, z: camp.z, id: 'camp-' + camp.id } : null;
+        return;
+      }
+    }
+    if (!foe) foe = nearest(Object.values(towers).filter(t => attackable(p, t)));
     p.dest = null; p.target = foe?.id || null;
     if (!foe) return;
     const d = dist(p, foe);
-    if (d < 14 && p.cCd <= 0) cpuSocket.send('c', foe);
-    if (d <= p.cfg.qRange + foe.radius && p.qCd <= 0) cpuSocket.send('q', foe);
-    if (!foe.dead && !foe.tower && d > p.cfg.atkRange + 1 && d < p.cfg.leapRange && p.eCd <= 0 && validDestination(p, foe)) {
-      if (!p.aiming) cpuSocket.send('dash');
-      cpuSocket.send('leap', foe);
-    }
+    const useC = p.character === 'darius' ? !foe.tower && d <= p.cfg.cRange + foe.radius
+      : p.character === 'mira' ? !foe.tower && d < CFG.magicRange && cpuShotClear(p, foe)
+      : p.character === 'lucia' ? !foe.tower && d < 12 && p.stealth <= 0 : d < 14;
+    if (useC && p.cCd <= 0) cpuSocket.send('c', foe);
+    if (!foe.dead && d <= p.cfg.qRange + foe.radius && p.qCd <= 0 && !(p.character === 'darius' && foe.tower)) cpuSocket.send('q', foe);
+    cpuMobility(p, foe);
   }
   // 大型モンスターの中心ではなく、体の外周を攻撃可能な距離として扱う。
   const reach = (range, e) => range + (e.tower || e.monster ? e.radius : 0);
@@ -709,13 +793,15 @@ function createMatch(solo = false, cpu = false) {
     if (tickForced(r)) return;
     pullUnit(r);
     if (r.stun > 0) { r.stun = decay(r.stun); r.moving = false; return; }
-    const marching = isAlexMinion(r);
+    const farming = owner.socket === cpuSocket && cpuFarming(owner);
+    const marching = isAlexMinion(r) && !farming;
     let objective = towers[r.objective];
     if (marching && (!objective || objective.dead)) {
       objective = Object.values(towers).filter(t => !t.dead && t.slot !== r.slot).sort((a, b) => dist(r, a) - dist(r, b))[0];
       r.objective = objective?.id || null;
     }
-    const ok = e => attackable(r, e) && (!marching || !e.tower) && dist(r, e) <= R.leash;
+    const ok = e => attackable(r, e) && (!marching || !e.tower) && dist(r, e) <= R.leash
+      && (!farming || (!e.tower && inControl(e.monster ? e.home : e, r.slot)));
     let foe = unit(r.target);
     if (!ok(foe)) {
       foe = null;
@@ -741,6 +827,7 @@ function createMatch(solo = false, cpu = false) {
     pushOut(r); updateBush(r);
   }
   function tickPlayer(p) {
+    if (p.socket === cpuSocket) observeCpu(p);
     for (const cd of ['atkCd', 'qCd', 'eCd', 'cCd']) p[cd] = Math.max(0, p[cd] - DT);
     if (p.dead) { p.respawn = decay(p.respawn); if (p.respawn <= 0) spawn(p); return; }
     p.moving = false;
@@ -768,6 +855,7 @@ function createMatch(solo = false, cpu = false) {
     }
     if (p.socket === cpuSocket) {
       thinkCpu(p);
+      if (!active() || p.warp || p.charge || p.grabbing) return;
       if (p.leap) { tickLeap(p); return; }
     }
     let dir = null, step = 0, foe = p.target && unit(p.target);
@@ -778,7 +866,7 @@ function createMatch(solo = false, cpu = false) {
     } else {
       let goal = p.dest;
       if (foe) {
-        if (dist(p, foe) <= reach(p.cfg.atkRange, foe)) {
+        if (dist(p, foe) <= reach(p.cfg.atkRange, foe) && (p.socket !== cpuSocket || p.character !== 'mira' || cpuShotClear(p, foe))) {
           goal = null; p.face = ang(p, foe);
           if (p.atkCd <= 0) { p.atkCd = p.cfg.atkCd; attack(p, foe, p.cfg.atkDmg); }
         } else if (!p.keys) goal = foe;
@@ -789,7 +877,7 @@ function createMatch(solo = false, cpu = false) {
       }
       if (goal) {
         if (p.socket === cpuSocket) {
-          march(p, goal, foe ? reach(p.cfg.atkRange, foe) : 0.2, speed);
+          march(p, goal, foe ? reach(p.cfg.atkRange, foe) : goal.range || 0.2, speed);
           pushOut(p); updateBush(p);
           if (protectedUnit(p)) p.hp = Math.min(p.cfg.maxHp, p.hp + CFG.safeHeal * DT);
           return;

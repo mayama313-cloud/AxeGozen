@@ -59,6 +59,8 @@
   #lobby button.primary { color: #172126; background: #e6c15a; border-color: #e6c15a; font-weight: 700; }
   #lobby button:disabled { opacity: .45; cursor: default; }
   #characterCards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin: 24px 0; }
+  #cpuCharacterPicker { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+  #cpuCharacter { font: inherit; color: #eef3f6; background: #203d4c; border: 1px solid #8eafbd; border-radius: 6px; padding: 10px 14px; }
   .character-card { background: #14252e; border: 2px solid #425c68; padding: 22px; border-radius: 12px; }
   .character-card.selected { border-color: var(--accent); background: #233843; }
   .character-card h3 { font-size: 25px; margin: 0 0 6px; color: var(--accent); }
@@ -127,7 +129,7 @@
     <h1>戦場へ、準備を。</h1>
     <p>モードを選んで試合開始。キャラクターを決めたら、敵陣のタワー5本を攻略しよう。</p>
     <div class="mode-list">
-      <label class="mode-option"><input type="radio" name="mode" value="cpu"><strong>CPU対戦</strong><p>CPUのアレックスと1対1。敵タワー5本を先に破壊すると勝利。通信なしで遊べます。</p></label>
+      <label class="mode-option"><input type="radio" name="mode" value="cpu"><strong>CPU対戦</strong><p>好きなキャラのCPUと1対1。敵タワー5本を先に破壊すると勝利。通信なしで遊べます。</p></label>
       <label class="mode-option"><input type="radio" name="mode" value="offline" checked><strong>オフライン</strong><p>1人用のタワー攻略練習。対戦通信なしで操作やスキルを試せます。</p></label>
       <label class="mode-option"><input type="radio" name="mode" value="online"><strong>オンライン</strong><p>参加中のプレイヤーと1対1でマッチング。2人が準備できたら開戦します。</p></label>
     </div>
@@ -141,6 +143,7 @@
   <section id="characterSelect" class="lobby-panel" hidden>
     <div class="eyebrow">CHARACTER SELECT</div><h2>キャラクターを選択</h2>
     <p id="selectionStatus" role="status">Q・E・Cとパッシブを確認して、出撃するキャラを選んでください。</p>
+    <label id="cpuCharacterPicker" hidden>CPUのキャラクター <select id="cpuCharacter" aria-label="CPUのキャラクター"></select></label>
     <div id="characterCards"></div>
     <div class="lobby-actions"><button id="confirmCharacter" type="button" class="primary" disabled>選択を確定・準備完了</button><button id="leaveSelection" type="button">ロビーに戻る</button><span id="opponentSelection"></span></div>
   </section>

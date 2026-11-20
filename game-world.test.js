@@ -24,6 +24,58 @@ function setup(solo = false, characters = ['alex', 'alex']) {
   return { match, a, b, p: players.a, q: players.b, towers, robots };
 }
 const ticks = (match, n) => { for (let i = 0; i < n; i++) match.tick(); };
+
+function cpuSetup() {
+  const match = createMatch(false, true), a = socket('human');
+  match.connect(a);
+  a.send('selectCharacter', { id: 'alex' }); a.send('confirmCharacter');
+  match.state.environment.enabled = false;
+  for (const tower of Object.values(match.state.towers)) tower.atkCd = 10000;
+  return { match, a, human: match.state.players.human, bot: match.state.players['cpu-player'] };
+}
+
+test('CPU attacks visible enemies with skills, respects cooldowns and ignores hidden enemies', () => {
+  const { match, human, bot } = cpuSetup();
+  place(bot, 0, -2); place(human, 1, -2);
+  match.tick();
+  assert.ok(human.hp < human.cfg.maxHp); assert.ok(bot.qCd > 4);
+  assert.ok(Object.values(match.state.robots).some(r => r.owner === bot.id));
+  const cd = bot.qCd;
+  ticks(match, 6); assert.ok(bot.qCd < cd);
+  human.stealth = 5; bot.thinkTime = 0; match.tick();
+  assert.notEqual(bot.target, human.id);
+});
+
+test('CPU navigates around obstacles to attack towers and can win the match', () => {
+  const { match, a, bot } = cpuSetup();
+  for (const t of Object.values(match.state.towers)) if (t.slot === 0) t.hp = 1;
+  ticks(match, TICK * 75);
+  assert.equal(a.events.state.phase, 'finished'); assert.equal(a.events.state.winner, bot.slot);
+  const position = { x: bot.x, z: bot.z };
+  ticks(match, 30); assert.equal(bot.x, position.x); assert.equal(bot.z, position.z);
+});
+
+test('CPU retreats to heal, resumes combat and respawns after death', () => {
+  const { match, bot } = cpuSetup();
+  place(bot, 12, -12); bot.hp = 30;
+  match.tick(); assert.equal(bot.retreating, true); assert.equal(bot.target, null);
+  ticks(match, TICK * 15);
+  assert.ok(bot.hp >= bot.cfg.maxHp * 0.9); assert.equal(bot.retreating, false);
+  bot.dead = true; bot.respawn = 0.1;
+  ticks(match, 4); assert.equal(bot.dead, false); assert.equal(bot.hp, bot.cfg.maxHp);
+});
+
+test('CPU completes a full match with tower retaliation and territory damage enabled', () => {
+  const match = createMatch(false, true), a = socket('human');
+  match.connect(a);
+  a.send('selectCharacter', { id: 'mira' }); a.send('confirmCharacter');
+  for (let i = 0; i < TICK * 600; i++) {
+    match.tick();
+    if (a.events.state.phase === 'finished') break;
+  }
+  assert.equal(a.events.state.phase, 'finished');
+  assert.equal(a.events.state.winner, 1);
+});
 const aim = e => ({ x: e.x, z: e.z });
 function place(e, x, z) { Object.assign(e, { x, z, dest: null, target: null, bush: -1 }); }
 

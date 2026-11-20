@@ -25,9 +25,9 @@
   session.on('lobby', () => { selfId = null; screen('lobbyHome'); });
   session.on('starting', ({ mode }) => {
     screen('matchmaking');
-    el('matchingTitle').textContent = mode === 'online' ? '対戦相手を探しています…' : '練習試合を準備しています…';
+    el('matchingTitle').textContent = mode === 'online' ? '対戦相手を探しています…' : mode === 'cpu' ? 'CPU戦を準備しています…' : '練習試合を準備しています…';
     el('matchingMessage').textContent = mode === 'online' ? '参加した順にマッチングします。相手が見つかるまでお待ちください。' : 'キャラクターを選択して始めましょう。';
-    el('restart').hidden = mode !== 'offline';
+    el('restart').hidden = mode === 'online';
   });
   session.on('init', data => { selfId = data.id; renderCards(data.characters); });
   session.on('state', state => {
@@ -43,9 +43,9 @@
       card.querySelector('button').setAttribute('aria-pressed', String(chosen));
     }
     el('confirmCharacter').disabled = !me.character || me.confirmed;
-    el('confirmCharacter').textContent = me.confirmed ? '相手の準備を待っています…' : state.solo ? 'このキャラで試合開始' : '選択を確定・準備完了';
+    el('confirmCharacter').textContent = me.confirmed ? '相手の準備を待っています…' : state.solo || state.cpu ? 'このキャラで試合開始' : '選択を確定・準備完了';
     el('selectionStatus').textContent = me.confirmed ? '準備完了。双方が確定すると試合が始まります。' : 'Q・E・Cとパッシブを確認して、出撃するキャラを選んでください。';
-    el('opponentSelection').textContent = state.solo ? 'オフライン：1人用タワー攻略' : `相手：${ArenaWorld.characterFor(opponent?.character)?.name || '選択中'}${opponent?.confirmed ? '（準備完了）' : ''}`;
+    el('opponentSelection').textContent = state.solo ? 'オフライン：1人用タワー攻略' : `${state.cpu ? 'CPU' : '相手'}：${ArenaWorld.characterFor(opponent?.character)?.name || '選択中'}${opponent?.confirmed ? '（準備完了）' : ''}`;
   });
   function failure(message) { screen('matchmaking'); el('matchingTitle').textContent = '試合を続けられません'; el('matchingMessage').textContent = message; }
   session.on('matchEnded', data => failure(data.reason));

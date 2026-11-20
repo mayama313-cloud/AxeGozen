@@ -69,7 +69,8 @@ function validLanding(from, to, { range, radius, half, blocks, safe, travel = fa
   return [...blocks, safe].every(o => dist(to, o) + 1e-8 >= o.r + radius);
 }
 
-function createMatch(solo = false) {
+function createMatch(solo = false, cpu = false) {
+  let cpuSocket = null;
   const players = {}, robots = {}, towers = {}, projectiles = {}, monsters = {}, energy = {};
   const environment = { enabled: true, totals: [0, 0] };
   let energySeq = 0, energyTimer = 0;
@@ -203,7 +204,8 @@ function createMatch(solo = false) {
     start.cost = 0; start.score = dist(start, goal);
     // 到達不能な目的地でも、1回の探索でフレーム全体を使い切らない。
     let explored = 0;
-    while (open.length && explored++ < 512) {
+    const searchLimit = r.socket === cpuSocket ? 4096 : 512;
+    while (open.length && explored++ < searchLimit) {
       let best = 0;
       for (let i = 1; i < open.length; i++) if (open[i].score < open[best].score) best = i;
       const current = open.splice(best, 1)[0], id = key(current.x, current.z);
@@ -258,7 +260,7 @@ function createMatch(solo = false) {
   }
   function spawn(p) {
     releaseHold(p); p.radius = p.cfg.radius;
-    Object.assign(p, SPAWNS[p.slot], { hp: p.cfg.maxHp, dest: null, target: null, dead: false, dashT: 0, moving: false, respawn: 0, stun: 0, recall: 0, keys: null, inputT: 0, shield: 0, aiming: false, leap: null, air: 0, speedBoost: 0, pull: null, stealth: 0, warp: null, charge: null, grabbing: null, held: null, flight: null });
+    Object.assign(p, SPAWNS[p.slot], { hp: p.cfg.maxHp, dest: null, target: null, dead: false, dashT: 0, moving: false, respawn: 0, stun: 0, recall: 0, keys: null, inputT: 0, shield: 0, aiming: false, leap: null, air: 0, speedBoost: 0, pull: null, stealth: 0, warp: null, charge: null, grabbing: null, held: null, flight: null, retreating: false, thinkTime: 0, path: [], pathTarget: null, pathGoal: null, pathAge: 0 });
     p.face = ang(p, { x: 0, z: 0 });
     updateBush(p);
   }
@@ -547,7 +549,7 @@ function createMatch(solo = false) {
     const p = players[socket.id] = { id: socket.id, socket, slot, radius: CFG.radius, kills: 0, atkCd: 0, qCd: 0, eCd: 0, cCd: 0, character: null, confirmed: false, cfg: configFor('alex') };
     spawn(p);
     if (solo || Object.keys(players).length === 2) phase = 'selecting';
-    socket.emit('init', { id: p.id, slot, cfg: CFG, map: MAP, solo, characters: CHARACTERS });
+    socket.emit('init', { id: p.id, slot, cfg: CFG, map: MAP, solo, cpu, characters: CHARACTERS });
     socket.on('selectCharacter', d => {
       if (phase !== 'selecting' || p.confirmed || !characterFor(d?.id)) return;
       p.character = d.id; p.cfg = configFor(d.id); spawn(p);
@@ -655,14 +657,47 @@ function createMatch(solo = false) {
       separateSummons();
       fx(p, 'summon');
     });
-    socket.on('restart', () => { if (solo && (active() || phase === 'finished')) { reset(); phase = 'playing'; } });
+    socket.on('restart', () => { if ((solo || cpu) && (active() || phase === 'finished')) { reset(); phase = 'playing'; } });
     socket.on('disconnect', () => {
       releaseHold(p);
       delete players[p.id];
       phase = 'abandoned';
       for (const v of Object.values(players)) v.socket.emit('matchEnded', { reason: '対戦相手が退出しました。ロビーからもう一度参加してください。' });
     });
+    if (cpu && !cpuSocket) {
+      const handlers = new Map();
+      cpuSocket = { id: 'cpu-player', on(event, fn) { handlers.set(event, fn); }, emit() {},
+        send(event, data) { handlers.get(event)?.(data); }, disconnect() {} };
+      connect(cpuSocket);
+      cpuSocket.send('selectCharacter', { id: 'alex' });
+      cpuSocket.send('confirmCharacter');
+    }
     return true;
+  }
+  // CPUも人間と同じ入力処理を通し、射程・視界・クールダウンを守る。
+  function thinkCpu(p) {
+    p.thinkTime = decay(p.thinkTime);
+    if (p.thinkTime > 0) return;
+    p.thinkTime = 0.2;
+    if (p.hp <= p.cfg.maxHp * 0.3) p.retreating = true;
+    if (p.hp >= p.cfg.maxHp * 0.9) p.retreating = false;
+    if (p.retreating) {
+      p.target = null;
+      p.dest = dist(p, SPAWNS[p.slot]) > 2 ? { ...SPAWNS[p.slot], id: 'home' } : null;
+      return;
+    }
+    const nearest = list => list.sort((a, b) => dist(p, a) - dist(p, b))[0];
+    const foe = nearest(units().filter(e => !e.monster && attackable(p, e) && dist(p, e) < (isRobot(e) ? 7 : 12)))
+      || nearest(Object.values(towers).filter(t => attackable(p, t)));
+    p.dest = null; p.target = foe?.id || null;
+    if (!foe) return;
+    const d = dist(p, foe);
+    if (d < 14 && p.cCd <= 0) cpuSocket.send('c', foe);
+    if (d <= p.cfg.qRange + foe.radius && p.qCd <= 0) cpuSocket.send('q', foe);
+    if (!foe.dead && !foe.tower && d > p.cfg.atkRange + 1 && d < p.cfg.leapRange && p.eCd <= 0 && validDestination(p, foe)) {
+      if (!p.aiming) cpuSocket.send('dash');
+      cpuSocket.send('leap', foe);
+    }
   }
   // 大型モンスターの中心ではなく、体の外周を攻撃可能な距離として扱う。
   const reach = (range, e) => range + (e.tower || e.monster ? e.radius : 0);
@@ -731,6 +766,10 @@ function createMatch(solo = false) {
       if (protectedUnit(p)) p.hp = Math.min(p.cfg.maxHp, p.hp + CFG.safeHeal * DT);
       return;
     }
+    if (p.socket === cpuSocket) {
+      thinkCpu(p);
+      if (p.leap) { tickLeap(p); return; }
+    }
     let dir = null, step = 0, foe = p.target && unit(p.target);
     if (!attackable(p, foe)) { foe = null; p.target = null; }
     if (p.dashT > 0) {
@@ -749,6 +788,12 @@ function createMatch(solo = false) {
         if (!foe || dist(p, foe) > reach(p.cfg.atkRange, foe)) p.face = Math.atan2(dir.x, dir.z);
       }
       if (goal) {
+        if (p.socket === cpuSocket) {
+          march(p, goal, foe ? reach(p.cfg.atkRange, foe) : 0.2, speed);
+          pushOut(p); updateBush(p);
+          if (protectedUnit(p)) p.hp = Math.min(p.cfg.maxHp, p.hp + CFG.safeHeal * DT);
+          return;
+        }
         const d = dist(p, goal);
         if (d < 0.1) p.dest = null;
         else {
@@ -826,8 +871,9 @@ function createMatch(solo = false) {
     }
     const list = Object.values(players);
     for (const v of list) {
+      if (v.socket === cpuSocket) continue;
       v.socket.emit('state', {
-        solo, winner, phase,
+        solo, cpu, winner, phase,
         control: [0, 1].map(slot => ({ slot, boundary: boundary(slot), energy: environment.totals[slot] })),
         energy: Object.values(energy),
         monsters: Object.values(monsters).filter(m => canSee(v.slot, m)).map(m => ({ id: m.id, slot: 2, large: m.large, x: r2(m.x), z: r2(m.z), hp: r2(m.hp), maxHp: m.maxHp, face: m.face, moving: m.moving, stun: m.stun, air: r2(m.air || 0) })),

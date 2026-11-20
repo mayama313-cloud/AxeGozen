@@ -24,8 +24,8 @@
     start(mode) {
       session.stop(); running = true; session.mode = mode;
       dispatch('starting', { mode });
-      if (mode === 'offline') {
-        const listeners = new Map(), match = ArenaWorld.createMatch(true);
+      if (mode === 'offline' || mode === 'cpu') {
+        const listeners = new Map(), match = ArenaWorld.createMatch(mode === 'offline', mode === 'cpu');
         local = {
           id: 'offline-player',
           on(event, fn) { listeners.set(event, fn); },

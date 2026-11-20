@@ -109,6 +109,7 @@
   .touch-ui .lobby-actions button { padding: 10px !important; font-size: 12px !important; }
   @media (max-width: 360px) { .touch-ui #touchStick { width: 104px; height: 104px; left: 8px; } .touch-ui #touchAttack, .touch-ui #touchCancel { width: 52px; height: 52px; right: 132px; } .touch-ui #skills { right: 8px; gap: 6px; } }
 </style>
+<link rel="stylesheet" href="training.css">
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
@@ -134,6 +135,8 @@
       <label class="mode-option"><input type="radio" name="mode" value="online"><strong>オンライン</strong><p>参加中のプレイヤーと1対1でマッチング。2人が準備できたら開戦します。</p></label>
     </div>
     <button id="startMatch" type="button" class="primary">試合開始</button>
+    <p><label><input id="recordTraining" type="checkbox" checked> ミニオン v1 の教師データを記録（CPU戦・オフライン）</label><br><small>終了時にこのブラウザーへ保存します。1試合20分まで。学習に使う区間は後で選択できます。</small></p>
+    <button id="openRecordings" type="button">記録・リプレイ</button>
   </section>
   <section id="matchmaking" class="lobby-panel" hidden>
     <div class="eyebrow">MATCHMAKING</div><h2 id="matchingTitle">対戦相手を探しています…</h2>
@@ -157,6 +160,7 @@
 <nav id="modes" aria-label="ゲームモード">
   <button id="returnLobby" type="button">ロビーに戻る</button>
   <button id="restart" type="button" hidden>最初からテスト</button>
+  <button id="reviewRecording" type="button">記録を保存してロビーへ</button>
 </nav>
 <div id="msg">接続中…</div>
 <div id="killFeed" role="log" aria-live="polite" aria-label="キルログ" aria-relevant="additions"></div>
@@ -174,9 +178,39 @@
 <div id="touchHelp">左スティック：移動<br>スキルを押す→地面をタップ<br>ドラッグして離しても発動</div>
 <div id="help">WASD: 移動 / 右クリック: 移動・通常攻撃 / 攻撃スキル: キー長押しで照準、離すか左クリックで発動（右クリック・Escでキャンセル） / 強化スキル: 即時発動 / B: 5秒リコール<br>敵タワー5本を全て破壊すると勝利。復活は5秒＋自陣の破壊済みタワー数×5秒。</div>
 </div>
+<div id="recordingStatus" role="status" hidden></div>
+<div id="replayControls" hidden>
+  <button id="replayPause" type="button">一時停止</button>
+  <label>再生位置 <input id="replayTime" type="range" min="0" max="1" step="0.033333"></label>
+  <output id="replayClock">0:00</output>
+  <button id="replayLibrary" type="button">区間を選ぶ</button>
+  <button id="replayExit" type="button">再生終了</button>
+</div>
+<dialog id="recordingsDialog">
+  <div class="recordings-heading"><h2>ミニオン v1 · 記録と教師データ</h2><button id="closeRecordings" type="button">閉じる</button></div>
+  <p id="recordingsMessage" role="status">採用区間を指定してから、教師データを書き出してください。</p>
+  <label>保存した試合 <select id="recordingList"></select></label>
+  <label>ファイルから読み込む <input id="importRecording" type="file" accept=".json,application/json"></label>
+  <div id="recordingDetails" hidden>
+    <p id="recordingInfo"></p>
+    <label>視点 <select id="recordingActor"></select></label>
+    <div class="recordings-actions"><button id="playRecording" type="button">この視点で再生</button><button id="downloadRecording" type="button">記録JSONを保存</button><button id="deleteRecording" type="button">この記録を削除</button></div>
+    <fieldset><legend>学習に使う区間（初期状態では全区間が未採用）</legend>
+      <label>開始（秒）<input id="rangeStart" type="number" min="0" step="0.1" value="0"></label>
+      <label>終了（秒）<input id="rangeEnd" type="number" min="0" step="0.1"></label>
+      <label>メモ <input id="rangeLabel" type="text" maxlength="200" placeholder="例：ファーム、撤退、ブッシュの捜索"></label>
+      <button id="useReplayTime" type="button">再生位置を開始時刻にする</button>
+      <button id="addTrainingRange" type="button">この区間を採用</button>
+      <ul id="trainingRanges"></ul>
+    </fieldset>
+    <p><label><input id="includeAlgorithm" type="checkbox"> CPU由来の区間も書き出す（移動・攻撃には推定操作を含みます）</label></p>
+    <button id="exportTraining" type="button">採用区間を教師データJSONLに書き出す</button>
+  </div>
+</dialog>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 <script src="/game-world.js"></script>
+<script src="training-data.js"></script>
 <script src="session.js"></script>
 <script src="audio.js"></script>
 <script src="skill-aim.js"></script>
@@ -184,5 +218,6 @@
 <script src="touch-controls.js"></script>
 <script src="game.js"></script>
 <script src="lobby.js"></script>
+<script src="training-ui.js"></script>
 </body>
 </html>

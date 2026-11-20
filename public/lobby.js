@@ -28,7 +28,7 @@
     screen('matchmaking');
     el('matchingTitle').textContent = mode === 'online' ? '対戦相手を探しています…' : mode === 'cpu' ? 'CPU戦を準備しています…' : '練習試合を準備しています…';
     el('matchingMessage').textContent = mode === 'online' ? '参加した順にマッチングします。相手が見つかるまでお待ちください。' : 'キャラクターを選択して始めましょう。';
-    el('restart').hidden = mode === 'online';
+    el('restart').hidden = mode === 'online' || mode === 'replay';
   });
   session.on('init', data => {
     selfId = data.id; renderCards(data.characters);

@@ -69,7 +69,10 @@ function validLanding(from, to, { range, radius, half, blocks, safe, travel = fa
   return [...blocks, safe].every(o => dist(to, o) + 1e-8 >= o.r + radius);
 }
 
-function createMatch(solo = false, cpu = false) {
+function createMatch(solo = false, cpu = false, { trace = null } = {}) {
+  let tickNumber = 0;
+  const report = data => { if (trace) trace({ tick: tickNumber, time: tickNumber / TICK, ...data }); };
+  const inputEvents = new Set(['steer', 'move', 'chase', 'q', 'dash', 'c', 'leap', 'cancelLeap', 'recall']);
   let cpuSocket = null;
   const players = {}, robots = {}, towers = {}, projectiles = {}, monsters = {}, energy = {};
   const environment = { enabled: true, totals: [0, 0] };
@@ -99,7 +102,15 @@ function createMatch(solo = false, cpu = false) {
   const damageable = (a, b) => b && !b.dead && !b.warp && b.slot !== a.slot && !protectedUnit(b);
   const attackable = (a, b) => damageable(a, b) && canSee(a.slot, b);
   function emitSee(src, ev, data) {
-    for (const v of Object.values(players)) if (canSee(v.slot, src)) v.socket.emit(ev, data);
+    for (const v of Object.values(players)) if (canSee(v.slot, src)) {
+      v.socket.emit(ev, data);
+      if (trace) report({ kind: 'event', actor: v.id, event: ev, data });
+    }
+  }
+  function recordInput(p, event, data, origin = 'input') {
+    if (!trace || !active()) return;
+    const payload = event === 'chase' ? { id: data?.id } : data ? { x: data.x, z: data.z } : null;
+    report({ kind: 'action', actor: p.id, origin, event, data: payload, observation: view(p) });
   }
   const boosted = (a, b) => (isRobot(a) ? players[a.owner]?.character : a.character) === 'alex' && (b.tower || isRobot(b));
   const fx = (p, kind, extra = {}) => emitSee(p, 'fx', { id: p.id, character: p.character, kind, x: r2(p.x), z: r2(p.z), face: r2(p.face), ...extra });
@@ -254,6 +265,7 @@ function createMatch(solo = false, cpu = false) {
     for (const turn of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4, 1.8, -1.8, 2.2, -2.2, 2.6, -2.6, Math.PI]) {
       const face = heading + turn, next = { x: r.x + Math.sin(face) * step, z: r.z + Math.cos(face) * step };
       if (!clearSegment(r, next, r.radius, blocks) || others.some(e => dist(next, e) < r.radius + e.radius + 0.03)) continue;
+      if (r.socket === cpuSocket) recordInput(r, 'steer', { x: Math.sin(face), z: Math.cos(face) }, 'derived');
       r.x = next.x; r.z = next.z; r.face = face; r.moving = step > 0.001;
       return;
     }
@@ -266,6 +278,8 @@ function createMatch(solo = false, cpu = false) {
     updateBush(p);
   }
   function reset() {
+    report({ kind: 'reset' });
+    tickNumber = 0;
     winner = null; elapsed = 0; energyTimer = 0; environment.totals = [0, 0];
     for (const collection of [monsters, energy]) for (const id of Object.keys(collection)) delete collection[id];
     for (const camp of camps) camp.timer = 5;
@@ -315,7 +329,10 @@ function createMatch(solo = false, cpu = false) {
     };
     // 撃破は試合内全員へ通知する。ブッシュ内の座標はログに含めない。
     const kill = { id: ++killSeq, time: r2(elapsed), attacker: describe(a), victim: describe(b) };
-    for (const viewer of Object.values(players)) viewer.socket.emit('kill', kill);
+    for (const viewer of Object.values(players)) {
+      viewer.socket.emit('kill', kill);
+      if (trace) report({ kind: 'event', actor: viewer.id, event: 'kill', data: kill });
+    }
     award(a, b.monster ? (b.large ? 30 : 8) : b.tower ? 25 : isRobot(b) ? 3 : 15);
     if (b.monster) {
       const farmer = isRobot(a) ? players[a.owner] : players[a.id];
@@ -550,14 +567,22 @@ function createMatch(solo = false, cpu = false) {
     const slot = [0, 1].find(s => !Object.values(players).some(p => p.slot === s));
     if (slot === undefined) { socket.emit('full'); socket.disconnect(); return false; }
     const p = players[socket.id] = { id: socket.id, socket, slot, radius: CFG.radius, kills: 0, atkCd: 0, qCd: 0, eCd: 0, cCd: 0, character: null, confirmed: false, cfg: configFor('alex') };
+    const listen = (event, fn) => socket.on(event, data => {
+      const wasActive = active();
+      if (inputEvents.has(event)) recordInput(p, event, data);
+      fn(data);
+      if (wasActive && phase === 'finished') recordFrame();
+    });
     spawn(p);
     if (solo || Object.keys(players).length === 2) phase = 'selecting';
-    socket.emit('init', { id: p.id, slot, cfg: CFG, map: MAP, solo, cpu, characters: CHARACTERS });
-    socket.on('selectCharacter', d => {
+    const init = { id: p.id, slot, cfg: CFG, map: MAP, solo, cpu, characters: CHARACTERS, rulesVersion: 'minion-v1-collection-1' };
+    socket.emit('init', init);
+    report({ kind: 'init', actor: p.id, source: socket === cpuSocket ? 'algorithm' : 'human', data: init });
+    listen('selectCharacter', d => {
       if (phase !== 'selecting' || p.confirmed || !characterFor(d?.id)) return;
       p.character = d.id; p.cfg = configFor(d.id); spawn(p);
     });
-    socket.on('selectCpuCharacter', d => {
+    listen('selectCpuCharacter', d => {
       if (!cpu || socket === cpuSocket || phase !== 'selecting' || p.confirmed || !characterFor(d?.id)) return;
       const bot = players[cpuSocket?.id];
       if (!bot) return;
@@ -565,23 +590,23 @@ function createMatch(solo = false, cpu = false) {
       cpuSocket.send('selectCharacter', { id: d.id });
       cpuSocket.send('confirmCharacter');
     });
-    socket.on('confirmCharacter', () => {
+    listen('confirmCharacter', () => {
       if (phase !== 'selecting' || !p.character) return;
       p.confirmed = true;
       if ((solo || Object.keys(players).length === 2) && Object.values(players).every(p => p.confirmed)) {
-        reset(); phase = 'playing';
+        reset(); phase = 'playing'; recordFrame();
       }
     });
     const ready = () => active() && !p.dead && p.stun <= 0 && !p.leap && !p.warp && !p.charge && !p.grabbing && !p.held && !p.flight;
-    socket.on('cancelLeap', () => { p.aiming = false; });
-    socket.on('leap', d => {
+    listen('cancelLeap', () => { p.aiming = false; });
+    listen('leap', d => {
       if (!ready() || p.character !== 'alex' || !p.aiming || p.eCd > 0 || !isNum(d?.x, d?.z)) return;
       if (!validDestination(p, d)) return;
       p.aiming = false; p.eCd = p.cfg.eCd; p.dest = null; p.target = null; p.keys = null; p.recall = 0;
       p.face = ang(p, d); p.leap = { from: { x: p.x, z: p.z }, to: { x: d.x, z: d.z }, elapsed: 0 };
       fx(p, 'leap');
     });
-    socket.on('steer', d => {
+    listen('steer', d => {
       if (!isNum(d?.x, d?.z) || Math.abs(d.x) > 1 || Math.abs(d.z) > 1) return;
       if (d.x === 0 && d.z === 0) { p.keys = null; return; }
       if (!ready()) return;
@@ -589,24 +614,24 @@ function createMatch(solo = false, cpu = false) {
       p.keys = { x: d.x / length, z: d.z / length }; p.inputT = CFG.inputTimeout;
       p.dest = null; p.recall = 0;
     });
-    socket.on('recall', () => {
+    listen('recall', () => {
       if (!ready()) return;
       if (p.recall > 0) { p.recall = 0; return; }
       p.recall = CFG.recallTime;
       p.dest = null; p.target = null; p.keys = null; p.dashT = 0; p.moving = false;
     });
-    socket.on('move', d => {
+    listen('move', d => {
       if (!ready() || !isNum(d?.x, d?.z)) return;
       p.recall = 0; p.keys = null;
       p.dest = { x: clamp(d.x), z: clamp(d.z) }; p.target = null;
     });
-    socket.on('chase', d => {
+    listen('chase', d => {
       const t = typeof d?.id === 'string' ? unit(d.id) : null;
       if (!ready() || !attackable(p, t)) return;
       p.recall = 0;
       p.target = t.id; p.dest = null;
     });
-    socket.on('q', d => {
+    listen('q', d => {
       if (!ready() || p.qCd > 0 || p.dashT > 0 || !isNum(d?.x, d?.z)) return;
       p.recall = 0;
       p.qCd = p.cfg.qCd; p.face = ang(p, d); p.dest = null;
@@ -618,7 +643,7 @@ function createMatch(solo = false, cpu = false) {
       }
       melee(p, p.cfg.qRange, p.cfg.qArc, p.cfg.qDmg, 'q');
     });
-    socket.on('dash', d => {
+    listen('dash', d => {
       if (!ready() || p.eCd > 0) return;
       if (p.character === 'darius') {
         if (!validDestination(p, d) || dist(p, d) < 0.01) return;
@@ -636,7 +661,7 @@ function createMatch(solo = false, cpu = false) {
       if (p.character === 'bastion') { p.shield = 2; fx(p, 'shield'); return; }
       if (p.character === 'mira') { p.speedBoost = p.cfg.windTime; fx(p, 'wind'); }
     });
-    socket.on('c', d => {
+    listen('c', d => {
       if (p.character === 'darius') {
         if (!ready() || p.cCd > 0 || !isNum(d?.x, d?.z)) return;
         p.cCd = p.cfg.cCd; p.recall = 0; p.face = ang(p, d); p.dest = null; uppercut(p); return;
@@ -668,8 +693,8 @@ function createMatch(solo = false, cpu = false) {
       separateSummons();
       fx(p, 'summon');
     });
-    socket.on('restart', () => { if ((solo || cpu) && (active() || phase === 'finished')) { reset(); phase = 'playing'; } });
-    socket.on('disconnect', () => {
+    listen('restart', () => { if ((solo || cpu) && (active() || phase === 'finished')) { reset(); phase = 'playing'; recordFrame(); } });
+    listen('disconnect', () => {
       releaseHold(p);
       delete players[p.id];
       phase = 'abandoned';
@@ -867,6 +892,7 @@ function createMatch(solo = false, cpu = false) {
       let goal = p.dest;
       if (foe) {
         if (dist(p, foe) <= reach(p.cfg.atkRange, foe) && (p.socket !== cpuSocket || p.character !== 'mira' || cpuShotClear(p, foe))) {
+          if (p.socket === cpuSocket) recordInput(p, 'chase', { id: foe.id }, 'derived');
           goal = null; p.face = ang(p, foe);
           if (p.atkCd <= 0) { p.atkCd = p.cfg.atkCd; attack(p, foe, p.cfg.atkDmg); }
         } else if (!p.keys) goal = foe;
@@ -947,7 +973,9 @@ function createMatch(solo = false, cpu = false) {
     }
   }
   function tick() {
+    const advanced = active();
     if (active()) {
+      tickNumber++;
       elapsed += DT;
       tickEnvironment();
       separateSummons();
@@ -960,8 +988,17 @@ function createMatch(solo = false, cpu = false) {
     const list = Object.values(players);
     for (const v of list) {
       if (v.socket === cpuSocket) continue;
-      v.socket.emit('state', {
-        solo, cpu, winner, phase,
+      v.socket.emit('state', view(v));
+    }
+    if (trace && advanced) recordFrame();
+  }
+  function recordFrame() {
+    if (trace) report({ kind: 'frame', phase, winner, views: Object.fromEntries(Object.values(players).map(v => [v.id, view(v)])) });
+  }
+  function view(v) {
+    const list = Object.values(players);
+    return {
+        solo, cpu, winner, phase, tick: tickNumber, time: tickNumber / TICK,
         control: [0, 1].map(slot => ({ slot, boundary: boundary(slot), energy: environment.totals[slot] })),
         energy: Object.values(energy),
         monsters: Object.values(monsters).filter(m => canSee(v.slot, m)).map(m => ({ id: m.id, slot: 2, large: m.large, x: r2(m.x), z: r2(m.z), hp: r2(m.hp), maxHp: m.maxHp, face: m.face, moving: m.moving, stun: m.stun, air: r2(m.air || 0) })),
@@ -970,13 +1007,13 @@ function createMatch(solo = false, cpu = false) {
           const vis = canSee(v.slot, p);
           const s = { id: p.id, slot: p.slot, character: p.character, confirmed: p.confirmed, maxHp: p.cfg.maxHp, hp: r2(p.hp), dead: p.dead, kills: p.kills, energy: p.energy, vis, stun: r2(p.stun), recall: r2(p.recall), shield: r2(p.shield) };
           if (vis) Object.assign(s, { x: r2(p.x), z: r2(p.z), face: r2(p.face), moving: active() && p.moving, air: r2(p.air), speedBoost: r2(p.speedBoost), stealth: r2(p.stealth), warping: p.warp ? r2(p.warp.remaining) : 0, charging: !!p.charge, grabbing: !!p.grabbing, grabbed: !!p.held, flying: !!p.flight, radius: p.radius });
-          if (p === v) Object.assign(s, { aiming: p.aiming, qCd: r2(p.qCd), eCd: r2(p.eCd), cCd: r2(p.cCd), respawn: r2(Math.max(0, p.respawn)), safe: !p.dead && protectedUnit(p), respawnTime: CFG.respawn + destroyed(p.slot) * CFG.respawnPerTower });
+          if (p === v) Object.assign(s, { aiming: p.aiming, qCd: r2(p.qCd), eCd: r2(p.eCd), cCd: r2(p.cCd), respawn: r2(Math.max(0, p.respawn)), safe: !p.dead && protectedUnit(p), respawnTime: CFG.respawn + destroyed(p.slot) * CFG.respawnPerTower,
+            inputs: { keys: p.keys && { ...p.keys }, dest: p.dest && { x: p.dest.x, z: p.dest.z }, target: p.target } });
           return s;
         }),
         robots: Object.values(robots).filter(r => canSee(v.slot, r)).map(r => ({ id: r.id, slot: r.slot, character: r.character, maxHp: r.maxHp || R.hp, x: r2(r.x), z: r2(r.z), face: r2(r.face), hp: r.hp, stun: r2(r.stun || 0), moving: active() && r.moving, air: r2(r.air || 0) })),
         projectiles: Object.values(projectiles).filter(b => canSee(v.slot, b)).map(b => ({ id: b.id, slot: b.slot, character: b.character, x: r2(b.x), z: r2(b.z), face: b.face, kind: b.kind })),
-      });
-    }
+      };
   }
   // サーバー内部の状態。Socket.IOのイベントからは直接変更できない。
   return { connect, tick, empty: () => Object.keys(players).length === 0, state: { players, robots, towers, projectiles, monsters, energy, environment, camps } };

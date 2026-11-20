@@ -364,6 +364,8 @@ function ensure(s, kind) {
 
 socket.on('init', d => {
   skillAim.cancel();
+  for (const f of fxs) disposeObject(f.g);
+  fxs.length = 0;
   updateControlZones([]);
   clearKillFeed();
   clearKeys();
@@ -440,7 +442,7 @@ function hud(st) {
   const list = st.players;
   const m = list.find(s => s.id === myId), f = list.find(s => s.id !== myId);
   if (!m || !cfg) return;
-  const locked = m.dead || m.stun > 0 || m.warping > 0 || m.air > 0 || m.charging || m.grabbing || m.grabbed || m.flying || phase !== 'playing';
+  const locked = socket.replaying || m.dead || m.stun > 0 || m.warping > 0 || m.air > 0 || m.charging || m.grabbing || m.grabbed || m.flying || phase !== 'playing';
   for (const key of ['q', 'e', 'c', 'b']) $(key + 'Skill').disabled = locked || (key !== 'b' && m[key + 'Cd'] > 0);
   $('touchAttack').disabled = locked;
   touchControls?.update();
@@ -461,6 +463,7 @@ function hud(st) {
   $('objective').textContent = `タワー残り　自陣 ${own}/5　敵陣 ${enemy}/5｜エネルギー ${m.energy || 0}｜自陣領域 ${Math.round(100 * (1 + (st.control?.[mySlot]?.boundary || 0) / 60) ** 2)}%`;
   $('status').textContent = `${st.cpu ? 'CPU対戦' : st.solo ? 'オフライン' : 'オンライン対戦'}｜${character?.name || ''}｜次回の復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}${m.shield > 0 ? '｜ダメージ50%軽減中' : ''}${m.speedBoost > 0 ? `｜移動速度2倍 ${m.speedBoost.toFixed(1)}秒` : ''}`;
   $('status').title = character?.passive || '';
+  if (socket.replaying) $('status').textContent = 'リプレイ｜' + $('status').textContent;
   if (m.stealth > 0) $('status').textContent += `｜透明化 ${m.stealth.toFixed(1)}秒`;
   $('msg').textContent = st.phase === 'finished' ? (st.winner === mySlot ? '勝利！ 敵タワーを全て破壊しました' : '敗北 — 自陣タワーが全て破壊されました')
     : st.phase === 'waiting' ? '対戦相手を待っています…（1人用テストも選べます）'

@@ -158,12 +158,89 @@ test('practice failure resets on the first death rather than training on the res
   assert.equal(result.episode.winner, null); assert.equal(env.elapsed, 0);
 });
 
-test('each character is evaluated on normal, retreat and hard-retreat starts', () => {
+test('each character is evaluated on normal, retreat, hard-retreat and defense starts', () => {
   const m = model(); m.characters = ['alex', 'mira'];
-  const result = evaluate(m, { seed: 1234, episodes: 12, maxSeconds: .1, gamma: .997 });
-  for (const character of m.characters) for (const scenario of ['match', 'retreat', 'retreat-hard']) {
+  const result = evaluate(m, { seed: 1234, episodes: 16, maxSeconds: .1, gamma: .997 });
+  for (const character of m.characters) for (const scenario of ['match', 'retreat', 'retreat-hard', 'defense']) {
     assert.equal(result.episodes.filter(e => e.character === character && e.scenario === scenario).length, 2);
   }
+});
+
+test('passive tower and zone damage is not credited as learner attacks or kills', () => {
+  const env = new Environment(model()); env.reset('match');
+  env.combat.push({ kind: 'damage', source: 't1-2', slot: 1, targetSlot: 0, targetKind: 'player', amount: 50 });
+  env.combat.push({ kind: 'kill', source: 'zone-1', slot: 1, targetSlot: 0, targetKind: 'player' });
+  env.step({ type: 0, latent: [0, 0] }, false);
+  assert.equal(env.metrics.damageDealt, 0); assert.equal(env.metrics.kills, 0);
+  env.combat.push({ kind: 'damage', source: 'cpu-player', slot: 1, targetSlot: 0, targetKind: 'player', amount: 20 });
+  env.combat.push({ kind: 'damage', source: 'robot-1', owner: 'cpu-player', slot: 1, targetSlot: 0, targetKind: 'player', amount: 5 });
+  env.step({ type: 0, latent: [0, 0] }, false);
+  assert.equal(env.metrics.damageDealt, 25);
+});
+
+test('tower damage is penalized before destruction and passive defense is not success', () => {
+  const env = new Environment(model(), { maxSeconds: 30 }); env.reset('defense');
+  let result;
+  for (let i = 0; i < 200; i++) {
+    result = env.step({ type: 0, latent: [0, 0] }, false);
+    if (result.episode) break;
+  }
+  assert.ok(result.episode);
+  assert.ok(env.metrics.ownTowerDamage > 0);
+  assert.equal(env.metrics.defenseDamage, 0);
+  assert.equal(env.metrics.defenseStopped, false);
+  assert.equal(env.metrics.damageDealt, 0);
+  assert.equal(env.metrics.kills, 0);
+});
+
+test('defense observations remember public tower damage without exposing a hidden attacker', () => {
+  const m = model(); m.featureVersion = Policy.DEFENSE_VERSION; Policy.validate(m);
+  const env = new Environment(m); env.reset('defense');
+  const state = structuredClone(env.state), p = state.players.find(p => p.id === 'cpu-player');
+  const tower = state.towers.find(t => t.id === env.defenseTower);
+  const memory = {};
+  Policy.updateMemory(memory, state, p.id, [], Policy.DEFENSE_VERSION);
+  tower.hp -= 10; state.time += .1;
+  const opponent = state.players.find(p => p.id === 'opponent'); opponent.vis = false; delete opponent.x; delete opponent.z;
+  Policy.updateMemory(memory, state, p.id, [], Policy.DEFENSE_VERSION);
+  const threat = Policy.defenseContext(state, p.id, m.init, memory);
+  assert.equal(threat.tower.id, tower.id); assert.equal(threat.attacker, null);
+  const v4 = Policy.features(state, p.id, m.init, memory, Policy.DEFENSE_VERSION);
+  assert.equal(v4[Policy.SIZE - 64], 1); assert.equal(v4[Policy.SIZE - 64 + 6], 0);
+  assert.ok(v4.every(Number.isFinite));
+  const { towers, ...olderMemory } = memory;
+  const v3 = Policy.features(state, p.id, m.init, olderMemory, Policy.FARM_VERSION);
+  assert.deepEqual(Array.from(v4.slice(0, Policy.SIZE - 64)), Array.from(v3.slice(0, Policy.SIZE - 64)));
+  assert.deepEqual(Array.from(v4.slice(-48)), Array.from(v3.slice(-48)));
+  const legacyMemory = {}; Policy.updateMemory(legacyMemory, state, p.id);
+  assert.equal(legacyMemory.towers, undefined);
+});
+
+test('the defense adapter preserves v3 inputs and exact outputs when there is no tower threat', () => {
+  const base = model(); base.featureVersion = Policy.FARM_VERSION;
+  const env = new Environment(base); env.reset('retreat');
+  const adapter = structuredClone(base); adapter.featureVersion = Policy.ADAPTER_VERSION; adapter.inputSize = Policy.SIZE + 16;
+  adapter.weights.hiddenW[0].push(...Array(16).fill(5));
+  adapter.weights.defenseW = Array.from({ length: 41 }, () => Array(16).fill(3));
+  Policy.validate(adapter);
+  const old = Policy.features(env.state, 'cpu-player', base.init, env.memory, base.featureVersion);
+  const extended = Policy.features(env.state, 'cpu-player', adapter.init, env.memory, adapter.featureVersion);
+  assert.deepEqual(Array.from(extended.slice(0, Policy.SIZE)), Array.from(old));
+  assert.ok(extended.slice(Policy.SIZE).every(x => x === 0));
+  assert.deepEqual(Policy.forward(adapter, extended), Policy.forward(base, old));
+});
+
+test('the damage alarm ignores proximity alone and activates on observed tower HP loss', () => {
+  const env = new Environment(model()); env.reset('defense');
+  const state = structuredClone(env.state), actor = 'cpu-player', memory = {};
+  Policy.updateMemory(memory, state, actor, [], Policy.ALARM_VERSION);
+  assert.ok(Policy.defenseContext(state, actor, env.model.init, memory));
+  const quiet = Policy.features(state, actor, env.model.init, memory, Policy.ALARM_VERSION);
+  assert.ok(quiet.slice(Policy.SIZE).every(x => x === 0));
+  state.towers.find(t => t.id === env.defenseTower).hp -= 15; state.time += .1;
+  Policy.updateMemory(memory, state, actor, [], Policy.ALARM_VERSION);
+  const alarm = Policy.features(state, actor, env.model.init, memory, Policy.ALARM_VERSION);
+  assert.equal(alarm[Policy.SIZE], 1);
 });
 
 test('empty Q casts cost reward without forbidding player actions or utility skills', () => {

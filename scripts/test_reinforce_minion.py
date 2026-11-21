@@ -74,11 +74,41 @@ class SteeringTests(unittest.TestCase):
     def test_feature_upgrade_preserves_existing_tactical_weights(self):
         model = {'featureVersion': 'minion-tactical/2', 'weights': {'hiddenW': [[1.] * 1024]}}
         module.upgrade_features(model)
-        self.assertEqual(model['weights']['hiddenW'][0][-32:], [1.] * 32)
-        self.assertEqual(model['weights']['hiddenW'][0][-48:-32], [0.] * 16)
+        self.assertEqual(model['weights']['hiddenW'][0][992:1024], [1.] * 32)
+        self.assertEqual(model['weights']['hiddenW'][0][976:992], [0.] * 16)
         model['weights']['hiddenW'][0][-40] = .5
         module.upgrade_features(model)
         self.assertEqual(model['weights']['hiddenW'][0][-40], .5)
+
+    def test_defense_lesson_does_not_demand_actions_while_locked(self):
+        actor = module.ActorCritic(self.model())
+        x = torch.zeros(2, 32)
+        mask = torch.zeros(2, 10, dtype=torch.bool)
+        mask[:, 0] = True
+        categorical, means, _, _, _ = actor.distribution(x, mask)
+        lesson = torch.tensor([[1., .1, .1], [0., 0., 0.]])
+        loss = module.defense_lesson_loss(categorical, means, lesson, mask)
+        self.assertEqual(float(loss.detach()), 0.)
+
+    def test_adapter_upgrade_preserves_all_existing_input_weights(self):
+        model = {'featureVersion': 'minion-tactical/3', 'weights': {'hiddenW': [[1.] * 1024]}}
+        module.upgrade_features(model)
+        self.assertEqual(model['weights']['hiddenW'][0][:1024], [1.] * 1024)
+        self.assertEqual(model['weights']['hiddenW'][0][1024:], [0.] * 16)
+
+    def test_adapter_training_keeps_existing_actor_weights_frozen(self):
+        model = self.model()
+        model['inputSize'] = 1040
+        model['weights']['hiddenW'] = [[0.] * 1040 for _ in range(2)]
+        model['weights']['typeW'][3] = [1., 1.]
+        model['defenseAdapter'] = 'frozen-base/1'
+        actor = module.ActorCritic(model)
+        x = torch.ones(2, 1040)
+        logits, _, _, _, _ = actor(x)
+        logits.sum().backward()
+        self.assertIsNone(actor.hidden.weight.grad)
+        self.assertGreater(float(actor.defense.weight.grad.abs().sum()), 0.)
+        self.assertIsNone(actor.types.weight.grad)
 
 
 if __name__ == '__main__':

@@ -25,7 +25,8 @@
       const loaded = window.MinionPolicy.validate(JSON.parse(await file.text()));
       if (loaded.rulesVersion !== 'minion-v1-collection-1') throw Error('ゲームのルール版とモデルが一致しません。');
       model = loaded;
-      const modelLabel = loaded.modelName + (loaded.reinforcementLearning ? loaded.featureVersion === 'minion-tactical/3' ? '（強化学習 v3）' : loaded.featureVersion ? '（強化学習 v2）' : '（強化学習）' : '');
+      const revision = { 'minion-defense-alarm/6': ' v6', 'minion-defense-adapter/5': ' v5', 'minion-tactical/4': ' v4', 'minion-tactical/3': ' v3', 'minion-tactical/2': ' v2' }[loaded.featureVersion] || '';
+      const modelLabel = loaded.modelName + (loaded.reinforcementLearning ? `（強化学習${revision}）` : '');
       el('cpuController').options[1].disabled = false;
       el('cpuController').options[1].textContent = modelLabel;
       el('cpuController').value = 'model';

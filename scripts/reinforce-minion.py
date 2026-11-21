@@ -29,6 +29,11 @@ class ActorCritic(nn.Module):
         self.critic_hidden = nn.Linear(size, hidden)
         self.value = nn.Linear(hidden, 1)
         self.log_std = nn.Parameter(torch.full((count, 2), math.log(0.25)))
+        self.defense = nn.Linear(16, 41, bias=False) if size == 1040 else None
+        if self.defense is not None:
+            nn.init.zeros_(self.defense.weight)
+            if 'defenseW' in model['weights']:
+                self.defense.weight.data.copy_(torch.tensor(model['weights']['defenseW']))
         for layer, prefix in [(self.hidden, 'hidden'), (self.types, 'type'), (self.points, 'point')]:
             layer.weight.data.copy_(torch.tensor(model['weights'][prefix + 'W']))
             layer.bias.data.copy_(torch.tensor(model['weights'][prefix + 'B']))
@@ -54,14 +59,19 @@ class ActorCritic(nn.Module):
         if 'valueHiddenW' in resume:
             self.critic_hidden.weight.data.copy_(torch.tensor(resume['valueHiddenW']))
             self.critic_hidden.bias.data.copy_(torch.tensor(resume['valueHiddenB']))
+        if model.get('defenseAdapter') == 'frozen-base/1':
+            for layer in [self.hidden, self.types, self.points, self.direction, self.order]:
+                for parameter in layer.parameters():
+                    parameter.requires_grad_(False)
         self.register_buffer('direction_vectors', torch.tensor([[0, 0], [1, 0], [2 ** -.5, 2 ** -.5], [0, 1], [-2 ** -.5, 2 ** -.5], [-1, 0], [-2 ** -.5, -2 ** -.5], [0, -1], [2 ** -.5, -2 ** -.5]], dtype=torch.float32))
 
     def forward(self, x):
         hidden = torch.tanh(self.hidden(x))
-        points = self.points(hidden).reshape(-1, self.log_std.shape[0], 2)
-        directions = (self.direction(hidden) + 1.5 * torch.tanh(points[:, 1]) @ self.direction_vectors.T) / self.temperature
+        extra = self.defense(x[:, 1024:]) if self.defense is not None else x.new_zeros((len(x), 41))
+        points = (self.points(hidden) + extra[:, 10:30]).reshape(-1, self.log_std.shape[0], 2)
+        directions = (self.direction(hidden) + extra[:, 30:39] + 1.5 * torch.tanh(points[:, 1]) @ self.direction_vectors.T) / self.temperature
         value = self.value(torch.tanh(self.critic_hidden(x))).flatten()
-        return self.types(hidden) / self.temperature, points, value, directions, self.order(hidden) / self.temperature
+        return (self.types(hidden) + extra[:, :10]) / self.temperature, points, value, directions, (self.order(hidden) + extra[:, 39:41]) / self.temperature
 
     def distribution(self, x, mask):
         logits, means, values, directions, orders = self(x)
@@ -147,10 +157,14 @@ def summarize(evaluation):
     episodes = evaluation['episodes']
     retreat = [e for e in episodes if e['scenario'].startswith('retreat')]
     matches = [e for e in episodes if e['scenario'] == 'match']
+    defense = [e for e in episodes if e['scenario'] == 'defense']
     return {'episodes': len(episodes), 'meanReturn': sum(e['return'] for e in episodes) / max(1, len(episodes)),
             'wins': sum(e['winner'] == 1 for e in episodes), 'losses': sum(e['winner'] == 0 for e in episodes),
             'timeouts': sum(e['truncated'] for e in episodes), 'deaths': sum(e['deaths'] for e in episodes),
             'retreatAttempts': len(retreat), 'retreatRecoveries': sum(e['recovery'] for e in retreat),
+            'defenseAttempts': len(defense), 'defenseStops': sum(e.get('defenseStopped', False) for e in defense),
+            'defenseTowerDamage': sum(e.get('ownTowerDamage', 0) for e in defense) / max(1, len(defense)),
+            'defenseInterventions': sum(e.get('defenseDamage', 0) >= 20 for e in defense),
             'lowHpChaseCommands': sum(e.get('lowHpChaseCommands', 0) for e in episodes),
             'lowHpStepsTowardHome': sum(e.get('lowHpStepsTowardHome', 0) for e in episodes),
             'lowHpStepsAwayFromHome': sum(e.get('lowHpStepsAwayFromHome', 0) for e in episodes),
@@ -164,7 +178,8 @@ def summarize(evaluation):
 def selection_score(stats, baseline=None):
     farm = min(2., stats.get('normalMatchEnergy', 0) / max(1., (baseline or stats).get('normalMatchEnergy', 0)))
     waste = (stats.get('emptyAttacks', 0) + stats.get('rejectedAttacks', 0)) / max(1, stats.get('attackAttempts', 0))
-    return (stats['wins'] - stats['losses'], stats['retreatRecoveries'] / max(1, stats['retreatAttempts']) + .5 * farm - .1 * waste,
+    defend = stats.get('defenseStops', 0) / max(1, stats.get('defenseAttempts', 0))
+    return (stats['wins'] - stats['losses'], stats['retreatRecoveries'] / max(1, stats['retreatAttempts']) + defend + .5 * farm - .1 * waste,
             -stats['deaths'] / max(1, stats['episodes']), stats['meanReturn'])
 
 
@@ -176,13 +191,28 @@ def eligible_for_selection(stats, baseline):
 
 def upgrade_features(model):
     previous = model.get('featureVersion')
-    if previous == 'minion-tactical/3':
+    if previous in ['minion-defense-adapter/5', 'minion-defense-alarm/6']:
+        model['featureVersion'] = 'minion-defense-alarm/6'
         return
+    if previous == 'minion-tactical/4':
+        raise ValueError('Start the defense adapter from a v3 farming model or an existing v5 adapter')
     for row in model['weights']['hiddenW']:
-        row[-48:-32] = [0.] * 16
-        if previous != 'minion-tactical/2':
+        if previous not in ['minion-tactical/3']:
+            row[-48:-32] = [0.] * 16
+        if previous not in ['minion-tactical/2', 'minion-tactical/3']:
             row[-32:] = [0.] * 32
-    model['featureVersion'] = 'minion-tactical/3'
+        row.extend([0.] * 16)
+    for row in model.get('reinforcementLearning', {}).get('valueHiddenW', []):
+        row.extend([0.] * 16)
+    model['inputSize'] = 1040
+    model['featureVersion'] = 'minion-defense-alarm/6'
+    model['defenseAdapter'] = 'frozen-base/1'
+
+
+def defense_lesson_loss(categorical, means, lesson, mask):
+    active = lesson[:, 0] * mask[:, 3].float()
+    return ((-categorical.log_prob(torch.full_like(active, 3, dtype=torch.long))
+             + 10 * (torch.tanh(means[:, 3]) - lesson[:, 1:]).square().mean(dim=1)) * active).mean()
 
 
 def main():
@@ -190,19 +220,21 @@ def main():
     parser.add_argument('--node', required=True)
     parser.add_argument('--model', type=Path, required=True)
     parser.add_argument('--reference-model', type=Path)
+    parser.add_argument('--train-base', action='store_true')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--updates', type=int, default=100)
     parser.add_argument('--steps', type=int, default=128)
     parser.add_argument('--envs', type=int, default=4)
     parser.add_argument('--max-seconds', type=float, default=120)
-    parser.add_argument('--retreat-fraction', type=float, default=0.35)
-    parser.add_argument('--farm-fraction', type=float, default=0.25)
-    parser.add_argument('--eval-episodes', type=int, default=12)
+    parser.add_argument('--retreat-fraction', type=float, default=0.25)
+    parser.add_argument('--farm-fraction', type=float, default=0.2)
+    parser.add_argument('--defense-fraction', type=float, default=0.3)
+    parser.add_argument('--eval-episodes', type=int, default=16)
     parser.add_argument('--eval-seconds', type=float, default=60)
     parser.add_argument('--eval-every', type=int, default=25)
     parser.add_argument('--seed', type=int, default=17)
     args = parser.parse_args()
-    if not (1 <= args.updates <= 100000 and 8 <= args.steps <= 2048 and 1 <= args.envs <= 32 and 1 <= args.max_seconds <= 1200 and 0 <= args.retreat_fraction <= 1 and 0 <= args.farm_fraction <= 1 - args.retreat_fraction and 2 <= args.eval_episodes <= 100 and 1 <= args.eval_seconds <= 1200 and args.eval_every >= 1):
+    if not (1 <= args.updates <= 100000 and 8 <= args.steps <= 2048 and 1 <= args.envs <= 32 and 1 <= args.max_seconds <= 1200 and 0 <= args.retreat_fraction <= 1 and 0 <= args.farm_fraction <= 1 and 0 <= args.defense_fraction <= 1 and args.retreat_fraction + args.farm_fraction + args.defense_fraction <= 1 and 2 <= args.eval_episodes <= 100 and 1 <= args.eval_seconds <= 1200 and args.eval_every >= 1):
         raise ValueError('Invalid RL training parameters')
     args.output.mkdir(parents=True, exist_ok=True)
     if args.model.parent.resolve() == args.output.resolve():
@@ -219,6 +251,8 @@ def main():
     # and get a categorical steering head that can explore the opposite direction.
     base = copy.deepcopy(base)
     upgrade_features(base)
+    if args.train_base:
+        base['defenseAdapter'] = 'trainable-base/1'
     base.setdefault('reinforcementLearning', {})['temperature'] = 1.
     base['movementOrder'] = 'learned-chase-order/1'
     base['controlProtocol'] = 'release-before-chase/1'
@@ -239,15 +273,19 @@ def main():
     reference_snapshot.write_bytes(reference_bytes)
     for p in reference.parameters():
         p.requires_grad_(False)
-    optimizer = torch.optim.Adam(actor.parameters(), lr=0.0001)
+    adapter_parameters = list(actor.defense.parameters()) if actor.defense is not None else []
+    adapter_ids = {id(p) for p in adapter_parameters}
+    optimizer = torch.optim.Adam([{'params': [p for p in actor.parameters() if id(p) not in adapter_ids], 'lr': .0001},
+                                  {'params': adapter_parameters, 'lr': .001}])
     gamma, lam = .997, .99
     engine = Engine(args.node)
     start = time.monotonic()
     report = {'algorithm': 'PPO', 'initialModel': str(args.model), 'initialSnapshot': str(initial_snapshot), 'initialSha256': hashlib.sha256(base_bytes).hexdigest(),
               'seed': args.seed, 'gamma': gamma, 'gaeLambda': lam, 'clip': .2, 'updates': args.updates,
               'referenceModel': str(args.reference_model or args.model), 'referenceSha256': hashlib.sha256(reference_bytes).hexdigest(),
-              'envs': args.envs, 'stepsPerUpdate': args.steps, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction, 'farmFraction': args.farm_fraction,
-              'temperature': actor.temperature, 'evaluationProtocol': 'balanced-tactics/3', 'referenceKlWeight': .02, 'healthyReferenceKlExtra': .2, 'learningRate': .0001,
+              'envs': args.envs, 'stepsPerUpdate': args.steps, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction, 'farmFraction': args.farm_fraction, 'defenseFraction': args.defense_fraction,
+              'temperature': actor.temperature, 'evaluationProtocol': 'balanced-tactics/4', 'referenceKlWeight': .02, 'healthyReferenceKlExtra': .2, 'learningRate': .0001,
+              'defenseLesson': 'training-only visible-attacker chase demonstrations in defense resets',
               'evalEvery': args.eval_every, 'selectionHistory': [], 'history': [], 'episodes': [],
               'limitations': ['short runs do not establish improvement', 'the reference algorithm opponent is not a human',
                               'truncated games are timeouts, not wins', 'checkpoint resume resets the optimizer',
@@ -264,6 +302,8 @@ def main():
         for layer, prefix in [(actor.hidden, 'hidden'), (actor.types, 'type'), (actor.points, 'point'), (actor.direction, 'direction'), (actor.order, 'order')]:
             model['weights'][prefix + 'W'] = layer.weight.detach().tolist()
             model['weights'][prefix + 'B'] = layer.bias.detach().tolist()
+        if actor.defense is not None:
+            model['weights']['defenseW'] = actor.defense.weight.detach().tolist()
         checkpoint = args.output / 'latest-model.json'
         temporary = args.output / 'model.tmp'
         temporary.write_text(json.dumps(model, ensure_ascii=False), encoding='utf-8')
@@ -300,7 +340,7 @@ def main():
         warm['weights']['orderB'] = actor.order.bias.detach().tolist()
         warm_start.write_text(json.dumps(warm, ensure_ascii=False), encoding='utf-8')
         initialized = engine.call({'op': 'init', 'model': str(warm_start.resolve()), 'envs': args.envs,
-                                   'options': {'gamma': gamma, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction, 'farmFraction': args.farm_fraction, 'seed': args.seed}})
+                                   'options': {'gamma': gamma, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction, 'farmFraction': args.farm_fraction, 'defenseFraction': args.defense_fraction, 'seed': args.seed}})
         report['rewardConfig'] = initialized['rewards']
         report['potentialConfig'] = initialized['shaping']
         evaluation_options = {'episodes': args.eval_episodes, 'maxSeconds': args.eval_seconds, 'seed': args.seed + 100000, 'gamma': gamma, 'characters': base['characters']}
@@ -314,7 +354,7 @@ def main():
         consider(warm_start, 'warm-start')
         observations = initialized['observations']
         for update in range(args.updates):
-            rollout = {key: [] for key in ['x', 'mask', 'coordinates', 'types', 'latent', 'direction', 'cancelOrder', 'oldLogProb', 'value', 'nextValue', 'reward', 'terminal', 'done']}
+            rollout = {key: [] for key in ['x', 'mask', 'coordinates', 'lesson', 'types', 'latent', 'direction', 'cancelOrder', 'oldLogProb', 'value', 'nextValue', 'reward', 'terminal', 'done']}
             for step in range(args.steps):
                 x, mask, coordinates = tensors(observations)
                 with torch.no_grad():
@@ -324,7 +364,7 @@ def main():
                 boot_x, _, _ = tensors([r['bootstrap'] for r in results])
                 with torch.no_grad():
                     _, _, next_value, _, _ = actor(boot_x)
-                entries = {'x': x, 'mask': mask, 'coordinates': coordinates, 'types': types, 'latent': latent, 'direction': direction, 'cancelOrder': cancel_order, 'oldLogProb': log_prob,
+                entries = {'x': x, 'mask': mask, 'coordinates': coordinates, 'lesson': torch.tensor([o['lesson'] for o in observations]), 'types': types, 'latent': latent, 'direction': direction, 'cancelOrder': cancel_order, 'oldLogProb': log_prob,
                            'value': value, 'nextValue': next_value, 'reward': torch.tensor([r['reward'] for r in results]),
                            'terminal': torch.tensor([float(r['terminal']) for r in results]),
                            'done': torch.tensor([float(r['terminal'] or r['truncated']) for r in results])}
@@ -350,9 +390,12 @@ def main():
                     with torch.no_grad():
                         reference_cat, reference_means, _, reference_steering, reference_orders = reference.distribution(batch['x'][indices], batch['mask'][indices])
                     anchor = kl_divergence(reference_cat, categorical) + .1 * (means - reference_means).square().mean(dim=(1, 2)) + .1 * kl_divergence(reference_steering, steering) + .1 * kl_divergence(reference_orders, orders)
-                    hp = batch['x'][indices, -32].clamp(0, 1)
-                    anchor_weight = .02 + .2 * hp.square()
-                    loss = policy_loss + .5 * value_loss - .01 * entropy.mean() + (anchor_weight * anchor).mean()
+                    hp = batch['x'][indices, 992].clamp(0, 1)
+                    threat = batch['x'][indices, 1024].clamp(0, 1)
+                    anchor_weight = (.02 + .2 * hp.square()) * (1 - .9 * threat)
+                    lesson = batch['lesson'][indices]
+                    lesson_loss = defense_lesson_loss(categorical, means, lesson, batch['mask'][indices])
+                    loss = policy_loss + .5 * value_loss - .005 * entropy.mean() + (anchor_weight * anchor).mean() + lesson_loss
                     if not torch.isfinite(loss):
                         raise RuntimeError('Non-finite PPO loss')
                     optimizer.zero_grad()
@@ -389,6 +432,7 @@ def main():
         with torch.no_grad():
             selected_model = json.loads(selected_checkpoint.read_text(encoding='utf-8'))
             selected_actor = ActorCritic(selected_model)
+            probe_x = probe_x[:, :selected_model['inputSize']]
             logits, points, _, directions, orders = selected_actor(probe_x)
         parity = {'x': probe_x[0].tolist(), 'logits': (logits[0] * selected_actor.temperature).tolist(), 'points': torch.tanh(points[0]).flatten().tolist()}
         if 'directionW' in selected_model['weights']:

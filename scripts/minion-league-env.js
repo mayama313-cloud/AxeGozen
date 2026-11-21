@@ -7,9 +7,10 @@ const Decisions = require('../public/minion-decisions');
 const { readJSON } = require('./minion-input');
 const init = model => ({ ...model.init, map: World.MAP, cfg: World.CFG, characters: World.CHARACTERS });
 const load = file => { const model = Policy.validate(readJSON(file)); return { file, model: { ...model, init: init(model) }, sha256: crypto.createHash('sha256').update(JSON.stringify(model)).digest('hex') }; };
-const REWARDS = Object.freeze({ win: 30, loss: -30, tower: 5, towerDamage: .008, large: 4, energy: .01, kill: 2, death: -3,
-  damageReceived: -.002, emptySkill: -.04, invalidSkill: -.01, unnecessaryRecall: -.25, repeatRecall: -.04, interruptedRecall: -.15,
-  spawnLoiterPerSecond: -.02, idlePerSecond: -.02, attackedFarmPerSecond: -.03, ignoredBossPerSecond: -.025, timePerSecond: -.01 });
+const REWARD_VERSION = 'league-activity/13';
+const REWARDS = Object.freeze({ win: 30, loss: -30, tower: 5, towerDamage: .008, large: 4, smallMonster: .8, energy: .01, kill: 2, death: -3,
+  damageReceived: -.002, emptySkill: -.25, invalidSkill: -.05, unnecessaryRecall: -.25, repeatRecall: -.04, interruptedRecall: -.15,
+  spawnLoiterPerSecond: -.1, idlePerSecond: -.1, attackedFarmPerSecond: -.03, ignoredBossPerSecond: -.025, timePerSecond: -.01 });
 function validateOptions(options) {
   if (!Number.isFinite(options.maxSeconds) || options.maxSeconds < 1 || options.maxSeconds > 86400) throw Error('maxSeconds must be 1..86400');
   if (!Number.isInteger(options.intervalTicks) || options.intervalTicks < 3 || options.intervalTicks > 9) throw Error('intervalTicks must be 3..9');
@@ -47,11 +48,12 @@ class LeagueEnvironment {
     this.fixture = this.pool.draw(this.model.characters); this.episode++; this.elapsed = 0; this.memory = {}; this.cues = []; this.combat = [];
     Object.assign(this.fixture,forced);
     if (!this.model.characters.includes(this.fixture.character) || ![0,1].includes(this.fixture.slot)) throw Error('Invalid forced fixture');
-    this.lastHeroHit = -100; this.lastBossHit = -100; this.totalReward = 0; const f = this.fixture;
+    this.lastHeroHit = -100; this.lastBossHit = -100; this.spawnGraceUntil = 5; this.totalReward = 0; const f = this.fixture;
     this.metrics = { opponent: f.category, opponentFile: f.entry?.file || null, opponentSha256: f.entry?.sha256 || null,
       character: f.character, opponentCharacter: f.opponentCharacter, slot: f.slot, kills: 0, deaths: 0, towers: 0, towersLost: 0,
-      towerDamage: 0, energy: 0, largeKills: 0, largeLosses: 0, recallStarts: 0, repeatRecalls: 0, unnecessaryRecalls: 0,
-      interruptedRecalls: 0, emptySkills: 0, invalidSkills: 0, spawnLoiterSeconds: 0, idleSeconds: 0, attackedFarmSeconds: 0, ignoredBossSeconds: 0 };
+      towerDamage: 0, energy: 0, smallKills: 0, largeKills: 0, largeLosses: 0, recallStarts: 0, repeatRecalls: 0, unnecessaryRecalls: 0,
+      interruptedRecalls: 0, emptySkills: 0, invalidSkills: 0, spawnLoiterSeconds: 0, idleSeconds: 0, fieldIdleSeconds: 0, attackedFarmSeconds: 0, ignoredBossSeconds: 0,
+      rewardComponents: { smallMonster: 0, energy: 0, emptySkill: 0, invalidSkill: 0, spawnLoiter: 0, idle: 0 } };
     const learner = () => [];
     learner.observe = e => this.cues.push(e);
     learner.observeState = state => { Policy.updateMemory(this.memory, state, 'league-learner', this.cues, this.model.featureVersion, this.model.init); this.cues = []; };
@@ -81,11 +83,13 @@ class LeagueEnvironment {
     const home = World.MAP.spawns[before.slot], homeD = Math.hypot(home.x-before.x,home.z-before.z), hp = before.hp / before.maxHp;
     const dt = this.options.intervalTicks / World.TICK, cfg = World.configFor(before.character);
     let reward = REWARDS.timePerSecond * dt;
+    const addReward = (key, amount) => { reward += amount; this.metrics.rewardComponents[key] += amount; };
     if (action.event === 'recall' && !before.dead && !before.stun) {
       if (before.recall > 0) { this.metrics.repeatRecalls++; reward += REWARDS.repeatRecall; }
       else { this.metrics.recallStarts++; if (hp >= .97 || homeD <= World.CFG.safeRadius + 2) { this.metrics.unnecessaryRecalls++; reward += REWARDS.unnecessaryRecall; } }
     }
-    const offensive = action.event === 'q' || action.event === 'c' && ['mira','darius'].includes(before.character) || action.event === 'leap';
+    // Mobility skills can be useful without hitting anyone, including Alex's leap.
+    const offensive = action.event === 'q' || action.event === 'c' && ['mira','darius'].includes(before.character);
     const range = action.event === 'q' ? cfg.qRange : action.event === 'leap' ? cfg.leapRange : before.character === 'mira' ? cfg.magicRange : cfg.cRange;
     const visibleTargets = [...this.state.players.filter(p => p.vis), ...this.state.robots, ...this.state.monsters, ...this.state.towers];
     const canHit = visibleTargets.some(p => p.slot !== before.slot && !p.dead && Number.isFinite(p.x) && Math.hypot(p.x-before.x,p.z-before.z) <= range + (p.radius || 1.5));
@@ -94,32 +98,39 @@ class LeagueEnvironment {
     this.combat = [];
     for (const c of Policy.commands(this.model, this.state, 'league-learner', action)) this.game.input('league-learner', c.event, c.data);
     if (offensive && !before.dead && !before.stun) {
-      if (this.game.state.players['league-learner'][cooldown] <= before[cooldown]) { this.metrics.invalidSkills++; reward += REWARDS.invalidSkill; }
-      else if (!canHit && !believed) { this.metrics.emptySkills++; reward += REWARDS.emptySkill; }
+      if (this.game.state.players['league-learner'][cooldown] <= before[cooldown]) { this.metrics.invalidSkills++; addReward('invalidSkill',REWARDS.invalidSkill); }
+      else if (!canHit && !believed) { this.metrics.emptySkills++; addReward('emptySkill',REWARDS.emptySkill); }
     }
     for (let i = 0; i < this.options.intervalTicks && this.state.phase === 'playing'; i++) { this.game.tick(); this.state = this.game.observe('league-learner'); }
     this.elapsed = this.state.time;
-    let dealt = 0, received = 0;
+    let directDealt = 0, received = 0;
     for (const e of this.combat) {
       const ours = e.slot === before.slot, owned = e.source === 'league-learner' || e.owner === 'league-learner';
       if (e.kind === 'damage') {
-        if (owned) dealt += e.amount;
+        if (e.source === 'league-learner') directDealt += e.amount;
         if (e.target === 'league-learner') { received += e.amount; reward += e.amount * REWARDS.damageReceived; if (e.source === 'league-opponent' || e.owner === 'league-opponent') this.lastHeroHit = this.elapsed; }
         if (e.targetKind === 'tower') { reward += e.amount * REWARDS.towerDamage * (ours ? 1 : -1); if (ours) this.metrics.towerDamage += e.amount; }
         if (e.large && !ours && e.slot !== 2) this.lastBossHit = this.elapsed;
       } else if (e.targetKind === 'tower') { this.metrics[ours ? 'towers' : 'towersLost']++; reward += REWARDS.tower * (ours ? 1 : -1); }
       else if (e.targetKind === 'monster' && e.large && e.slot !== 2) { this.metrics[ours ? 'largeKills' : 'largeLosses']++; reward += REWARDS.large * (ours ? 1 : -1); }
+      else if (e.targetKind === 'monster' && !e.large && owned) { this.metrics.smallKills++; addReward('smallMonster',REWARDS.smallMonster); }
       else if (e.targetKind === 'player') { this.metrics[e.targetSlot === before.slot ? 'deaths' : 'kills']++; reward += e.targetSlot === before.slot ? REWARDS.death : REWARDS.kill; }
     }
     const after = this.state.players.find(p => p.id === 'league-learner'), energy = Math.max(0, after.energy - before.energy);
-    this.metrics.energy += energy; reward += energy * REWARDS.energy;
+    this.metrics.energy += energy; addReward('energy',energy * REWARDS.energy);
     if (before.recall > 0 && !after.recall && received > 0) { this.metrics.interruptedRecalls++; reward += REWARDS.interruptedRecall; }
     const target = [...this.state.monsters,...this.state.players,...this.state.towers,...this.state.robots].find(t => t.id === after.inputs?.target && !t.dead);
-    const healthy = after.hp / after.maxHp >= .9, moving = Math.hypot(after.x-before.x,after.z-before.z) > .03;
+    const moving = Math.hypot(after.x-before.x,after.z-before.z) > .03;
+    // Only real recovery or combat exempts inactivity. A stale target or distant summon damage does not.
+    const recovering = after.hp > before.hp + .01 || after.recall > 0 && hp < .9 && homeD > World.CFG.safeRadius + 2;
+    const targetRadius = target?.radius || (target?.large ? 1.5 : target?.slot === 2 ? .65 : this.state.towers.some(t => t.id === target?.id) ? World.CFG.tower.radius : 0);
+    const inAttackRange = target && Number.isFinite(target.x) && Math.hypot(target.x-after.x,target.z-after.z) <= cfg.atkRange + targetRadius + .1;
+    const engaged = directDealt > 0 || inAttackRange && this.game.state.players['league-learner'].atkCd > 0;
+    if (before.dead && !after.dead) this.spawnGraceUntil = this.elapsed + 3;
     const free = !after.dead && !after.stun && !after.air && !after.charging && !after.warping && !after.grabbing && !after.grabbed && !after.flying;
-    if (free && this.elapsed > 5) {
-      if (healthy && !dealt && !received && Math.hypot(after.x-home.x,after.z-home.z) < 8) { this.metrics.spawnLoiterSeconds += dt; reward += dt * REWARDS.spawnLoiterPerSecond; }
-      if (healthy && !moving && !after.recall && !dealt && !target) { this.metrics.idleSeconds += dt; reward += dt * REWARDS.idlePerSecond; }
+    if (free && this.elapsed > this.spawnGraceUntil) {
+      if (!recovering && !engaged && Math.hypot(after.x-home.x,after.z-home.z) < 8) { this.metrics.spawnLoiterSeconds += dt; addReward('spawnLoiter',dt * REWARDS.spawnLoiterPerSecond); }
+      if (!recovering && !engaged && !moving) { this.metrics.idleSeconds += dt; if (Math.hypot(after.x-home.x,after.z-home.z) >= 8) this.metrics.fieldIdleSeconds += dt; addReward('idle',dt * REWARDS.idlePerSecond); }
       if (target?.slot === 2 && this.elapsed - this.lastHeroHit < 1) { this.metrics.attackedFarmSeconds += dt; reward += dt * REWARDS.attackedFarmPerSecond; }
       const boss = this.state.monsters.find(m => m.large && !m.dead);
       if (boss && boss.hp / boss.maxHp < .25 && Math.hypot(boss.x-after.x,boss.z-after.z) < 16 && this.elapsed-this.lastBossHit < 2 && target?.id !== boss.id) { this.metrics.ignoredBossSeconds += dt; reward += dt * REWARDS.ignoredBossPerSecond; }
@@ -146,7 +157,7 @@ async function serve() {
         if (!Number.isInteger(q.envs) || q.envs < 1 || q.envs > 16) throw Error('envs must be 1..16');
         pool = new Pool(q.pool); const model = load(q.model).model;
         environments = Array.from({length:q.envs},(_,i) => new LeagueEnvironment(model,pool,{...q.options,seed:q.options.seed+i*997}));
-        response = { observations: environments.map(e => e.reset()), rewards: REWARDS };
+        response = { observations: environments.map(e => e.reset()), rewards: REWARDS, rewardProfile: REWARD_VERSION };
       } else if (q.op === 'step') {
         if (q.actions?.length !== environments.length) throw Error('Invalid action batch');
         response = { results: environments.map((e,i) => e.step(q.actions[i])) };
@@ -160,10 +171,11 @@ async function serve() {
         for (let i = 0; i < q.episodes; i++) {
           const index=i+offset,env = new LeagueEnvironment(entry.model,evaluationPool,{...q.options,seed:q.options.seed+index*997});
           let observation = env.reset({character:entry.model.characters[index%entry.model.characters.length],slot:Math.floor(index/entry.model.characters.length)%2});
+          let rng=(q.options.seed+index*997 ^ 12345)>>>0;
           for (;;) {
             const conditioning = Decisions.context(entry.model.tacticalPolicy, observation.x);
-            let best = 0, value = -Infinity;
-            env.choices.forEach((c,j) => { const score = Decisions.score(entry.model.tacticalPolicy,c.x,conditioning); if (score > value) { best=j; value=score; } });
+            rng=(Math.imul(rng,1664525)+1013904223)>>>0;
+            const best=Decisions.select(env.choices.map(c=>Decisions.score(entry.model.tacticalPolicy,c.x,conditioning)),Decisions.temperature(entry.model.tacticalPolicy,q.temperature),rng/4294967296);
             const r = env.step(best,false); if (r.episode) { episodes.push(r.episode); break; } observation = r.observation;
           }
         }
@@ -175,4 +187,4 @@ async function serve() {
   }
 }
 if (require.main === module) serve();
-module.exports = { Pool, LeagueEnvironment, REWARDS, validateOptions };
+module.exports = { Pool, LeagueEnvironment, REWARDS, REWARD_VERSION, validateOptions };

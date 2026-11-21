@@ -2,6 +2,7 @@
   'use strict';
   const World = root.ArenaWorld || require('../game-world');
   const VERSION = 'minion-player-decisions/11', SIZE = 66, LEAGUE_SIZE = 96, MAX = 128;
+  const DEFAULT_INFERENCE_TEMPERATURE = .5;
   const EVENTS = ['noop', 'steer', 'move', 'chase', 'q', 'dash', 'c', 'leap', 'cancelLeap', 'recall'];
   const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
   const clip = n => Math.max(-2, Math.min(2, Number.isFinite(n) ? n : 0));
@@ -12,6 +13,23 @@
       || w.hiddenB.some(v => !Number.isFinite(v)) || w.outputW?.length !== h || w.outputW.some(v => !Number.isFinite(v)) || !Number.isFinite(w.outputB)) throw Error('戦闘判断モデルが不正です。');
     if (p.scope && p.scope !== 'visible-encounter/1') throw Error('戦闘判断の適用範囲が不正です。');
     if (p.contextSize !== undefined && (!Number.isInteger(p.contextSize) || p.contextSize < 1024 || p.contextSize > 2048 || w.contextW?.length !== h || w.contextW.some(r => r.length !== p.contextSize || r.some(v => !Number.isFinite(v))))) throw Error('全体観測の重みが不正です。');
+    if (p.inferenceTemperature !== undefined) temperature(p);
+  }
+  function temperature(p, override = undefined) {
+    const value = override ?? p.inferenceTemperature ?? (p.inputSize === LEAGUE_SIZE ? DEFAULT_INFERENCE_TEMPERATURE : 0);
+    if (!Number.isFinite(value) || value < 0 || value > 5) throw Error('推論温度は0〜5で指定してください。');
+    return value;
+  }
+  function select(scores, t, draw = null) {
+    if (!scores.length || scores.some(v => !Number.isFinite(v))) throw Error('推論スコアが不正です。');
+    if (!Number.isFinite(t) || t < 0 || t > 5) throw Error('推論温度は0〜5で指定してください。');
+    const maximum = Math.max(...scores), best = scores.indexOf(maximum);
+    if (t === 0 || draw === null) return best;
+    if (!Number.isFinite(draw) || draw < 0 || draw >= 1) throw Error('推論乱数が不正です。');
+    const weights = scores.map(s => Math.exp((s - maximum) / t));
+    let remaining = draw * weights.reduce((s,w) => s+w,0);
+    for (let i=0;i<weights.length;i++) { remaining-=weights[i]; if (remaining < 0) return i; }
+    return weights.length-1;
   }
   function context(p, observation) {
     if (!p.contextSize) return null;
@@ -138,11 +156,11 @@
     }
     return result;
   }
-  function choose(model, state, actor, base, memory = {}, observation = null) {
-    const choices = candidates(model, state, actor, base, memory), conditioning = context(model.tacticalPolicy, observation); let best = 0, value = -Infinity;
-    choices.forEach((c, i) => { const v = score(model.tacticalPolicy, c.x, conditioning); if (v > value) { value = v; best = i; } });
+  function choose(model, state, actor, base, memory = {}, observation = null, draw = null) {
+    const choices = candidates(model, state, actor, base, memory), conditioning = context(model.tacticalPolicy, observation);
+    const best = select(choices.map(c => score(model.tacticalPolicy,c.x,conditioning)),temperature(model.tacticalPolicy),draw);
     return { ...choices[best].action, tacticalChoice: best };
   }
-  const api = { VERSION, SIZE, LEAGUE_SIZE, MAX, validate, score, context, candidates, choose };
+  const api = { VERSION, SIZE, LEAGUE_SIZE, MAX, DEFAULT_INFERENCE_TEMPERATURE, validate, score, context, temperature, select, candidates, choose };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.MinionDecisions = api;
 })(globalThis);

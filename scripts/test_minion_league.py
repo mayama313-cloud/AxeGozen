@@ -31,5 +31,9 @@ class LeagueTests(unittest.TestCase):
         report=module.summarize([])
         self.assertEqual(report['wins'],0);self.assertIsNone(report['opponents']['algorithm']['winRateDecided'])
 
+    def test_explicit_inference_temperature_survives_additional_training_exports(self):
+        model=self.model();model['tacticalPolicy']['inferenceTemperature']=.25
+        self.assertEqual(module.LeagueActor(model).export()['inferenceTemperature'],.25)
+
 
 if __name__=='__main__':unittest.main()

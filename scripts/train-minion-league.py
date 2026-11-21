@@ -23,6 +23,7 @@ class LeagueActor(nn.Module):
     def __init__(self, model):
         super().__init__()
         p = model['tacticalPolicy']; w = p['weights']; hidden = p['hiddenSize']
+        self.inference_temperature = p.get('inferenceTemperature')
         self.hidden = nn.Linear(WIDTH, hidden)
         self.context = nn.Linear(model['inputSize'], hidden, bias=False)
         self.output = nn.Linear(hidden, 1)
@@ -39,10 +40,12 @@ class LeagueActor(nn.Module):
         return Categorical(logits=scores.masked_fill(~mask, -1e9)), self.critic(x).flatten()
 
     def export(self):
-        return {'version': 'minion-player-decisions/11', 'inputSize': WIDTH, 'contextSize': self.context.in_features,
+        result = {'version': 'minion-player-decisions/11', 'inputSize': WIDTH, 'contextSize': self.context.in_features,
                 'hiddenSize': self.hidden.out_features, 'weights': {'hiddenW': self.hidden.weight.detach().tolist(),
                 'hiddenB': self.hidden.bias.detach().tolist(), 'contextW': self.context.weight.detach().tolist(),
                 'outputW': self.output.weight.detach().flatten().tolist(), 'outputB': float(self.output.bias.detach()[0])}}
+        if self.inference_temperature is not None: result['inferenceTemperature'] = self.inference_temperature
+        return result
 
 
 def tensors(observations):
@@ -72,8 +75,9 @@ def summarize(episodes):
     n = max(1, len(episodes))
     return {'games': len(episodes), 'wins': sum(e['winner'] == 1 for e in episodes), 'losses': sum(e['winner'] == 0 for e in episodes),
             'draws': sum(e['winner'] is None for e in episodes), 'opponents': groups,
-            'mean': {key: sum(e[key] for e in episodes)/n for key in ['seconds','towerDamage','towers','energy','largeKills','deaths',
-                'unnecessaryRecalls','repeatRecalls','interruptedRecalls','emptySkills','spawnLoiterSeconds','attackedFarmSeconds','ignoredBossSeconds']}}
+            'mean': {key: sum(e.get(key,0) for e in episodes)/n for key in ['seconds','towerDamage','towers','energy','smallKills','largeKills','deaths',
+                'unnecessaryRecalls','repeatRecalls','interruptedRecalls','emptySkills','spawnLoiterSeconds','idleSeconds','attackedFarmSeconds','ignoredBossSeconds']},
+            'rewardComponents': {key: sum(e.get('rewardComponents',{}).get(key,0) for e in episodes)/n for key in ['smallMonster','energy','emptySkill','invalidSkill','spawnLoiter','idle']}}
 
 
 def main():
@@ -130,7 +134,8 @@ def main():
     def save(name, update):
         model = copy.deepcopy(base); model['tacticalPolicy'] = actor.export()
         model['leagueTraining'] = {'protocol':'full-match-league/12','updates':update,'transitions':update*args.steps*args.envs,
-                                  'sourceSha256':report['sourceSha256'],'seed':args.seed,'report':'league-training.json','opponentWeights':weights}
+                                  'sourceSha256':report['sourceSha256'],'seed':args.seed,'report':'league-training.json','opponentWeights':weights,
+                                  'rewardProfile':report.get('rewardProfile')}
         dest = args.output/name; temp = args.output/(name+'.tmp')
         temp.write_text(json.dumps(model,ensure_ascii=False),encoding='utf8');temp.replace(dest);return dest
     def pool(latest):
@@ -142,7 +147,7 @@ def main():
         warm = save('warm-start-model.json',0); current_pool = pool(warm)
         initialized = engine.call({'op':'init','model':str(warm.resolve()),'pool':current_pool,'envs':args.envs,
                                    'options':{'seed':args.seed,'maxSeconds':args.max_seconds,'intervalTicks':args.interval_ticks,'gamma':gamma}})
-        obs = initialized['observations']; report['rewards'] = initialized['rewards']; report['gamma'] = gamma; report['gaeLambda'] = lam
+        obs = initialized['observations']; report['rewards'] = initialized['rewards']; report['rewardProfile'] = initialized['rewardProfile']; report['gamma'] = gamma; report['gaeLambda'] = lam
         frozen_evaluation_pool = copy.deepcopy(current_pool)
         frozen_evaluation_pool['latest'] = str(args.model.resolve())
         report['evaluationPool'] = frozen_evaluation_pool

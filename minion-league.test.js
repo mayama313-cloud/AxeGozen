@@ -6,7 +6,7 @@ const path = require('node:path');
 const World = require('./game-world');
 const Policy = require('./public/minion-policy');
 const Decisions = require('./public/minion-decisions');
-const { Pool, LeagueEnvironment } = require('./scripts/minion-league-env');
+const { Pool, LeagueEnvironment, REWARDS } = require('./scripts/minion-league-env');
 function model() {
   return { format:Policy.VERSION, rulesVersion:'minion-v1-collection-1', inputSize:1072, hiddenSize:1, featureVersion:'minion-bush-memory/10',
     characters:['alex','bastion','darius','mira'], events:Policy.EVENTS, decisionMode:'learned/1', decisionIntervalTicks:6,
@@ -70,7 +70,66 @@ test('global observations condition candidate scores and malformed context weigh
   p.weights.contextW[0][0]=NaN;assert.throws(()=>Policy.validate(m));
 });
 test('controller decision cadence survives match resets and keeps ordinary input handling',()=>{
-  const m=model(),env=new LeagueEnvironment(m,new Pool(config));env.reset();const control=Policy.controller(m,{actorId:'league-learner',slot:0});
+  const m=model();m.tacticalPolicy.inferenceTemperature=0;
+  const env=new LeagueEnvironment(m,new Pool(config));env.reset();const control=Policy.controller(m,{actorId:'league-learner',slot:0});
   const state=env.state;const first=control(state);assert.ok(first.length);
   assert.deepEqual(control({...state,tick:state.tick+3}),[]);control.reset();assert.ok(control(state).length);
+});
+
+function warmEnvironment() {
+  const env=new LeagueEnvironment(model(),new Pool(config));env.reset();
+  for(let i=0;i<180;i++)env.game.tick();env.state=env.game.observe('league-learner');env.observation();return env;
+}
+function choose(env,event) {return env.choices.findIndex(c=>c.action.event===event);}
+test('standing at spawn costs every second, even with a distant stale target',()=>{
+  const env=warmEnvironment(),p=env.game.state.players['league-learner'];
+  p.target=Object.values(env.game.state.towers).find(t=>t.slot!==p.slot).id;
+  // Simulate an order which cannot currently make progress; targeting alone must not exempt idling.
+  p.stun=0;env.state=env.game.observe(p.id);env.observation();
+  const originalTick=env.game.tick;env.game.tick=()=>{p.dest=null;p.keys=null;const x=p.x,z=p.z;originalTick();p.x=x;p.z=z;};
+  env.step(choose(env,'noop'),false);
+  assert.ok(env.metrics.rewardComponents.idle<0);assert.ok(env.metrics.rewardComponents.spawnLoiter<0);
+  assert.ok(env.metrics.rewardComponents.idle+env.metrics.rewardComponents.spawnLoiter<=-.039);
+});
+test('walking circles near spawn still costs time, while actual healing is exempt',()=>{
+  const env=warmEnvironment();env.step(choose(env,'steer'),false);
+  assert.ok(env.metrics.rewardComponents.spawnLoiter<0);
+  const healing=warmEnvironment(),p=healing.game.state.players['league-learner'];p.hp=p.cfg.maxHp*.5;
+  healing.state=healing.game.observe(p.id);healing.observation();healing.step(choose(healing,'noop'),false);
+  assert.equal(healing.metrics.rewardComponents.spawnLoiter,0);assert.equal(healing.metrics.rewardComponents.idle,0);
+});
+test('an empty attack has the stronger cost and a normal small-monster kill earns its own reward',()=>{
+  const empty=warmEnvironment();empty.step(choose(empty,'q'),false);
+  assert.equal(empty.metrics.rewardComponents.emptySkill,REWARDS.emptySkill);assert.ok(REWARDS.emptySkill<=-.25);
+  const farm=warmEnvironment(),p=farm.game.state.players['league-learner'];
+  const monster=Object.values(farm.game.state.monsters).find(m=>!m.large);
+  monster.hp=1;p.x=monster.x+1.8;p.z=monster.z;p.target=null;p.keys=null;p.dest=null;
+  farm.state=farm.game.observe(p.id);farm.observation();
+  const attack=farm.choices.findIndex(c=>c.action.event==='q'&&c.action.data?.x===farm.state.monsters.find(m=>m.id===monster.id).x);
+  farm.step(attack,false);
+  assert.equal(farm.metrics.smallKills,1);assert.equal(farm.metrics.rewardComponents.smallMonster,.8);
+  assert.ok(farm.metrics.rewardComponents.energy>=.08);assert.equal(farm.metrics.rewardComponents.idle,0);
+});
+
+test('using a movement skill without an enemy in range is not an empty attack',()=>{
+  const env=warmEnvironment(),p=env.game.state.players['league-learner'];env.game.input(p.id,'dash');
+  env.state=env.game.observe(p.id);env.observation();
+  const leap=env.choices.findIndex(c=>c.action.event==='leap');assert.ok(leap>=0);
+  env.step(leap,false);assert.equal(env.metrics.emptySkills,0);
+});
+
+test('temperature zero is greedy, positive temperatures sample stably and do not drop legal low-ranked actions',()=>{
+  assert.equal(Decisions.select([1,2,3],0,.01),2);
+  assert.equal(Decisions.select([10000,10000],.5,0),0);assert.equal(Decisions.select([10000,10000],.5,.99),1);
+  const count=t=>Array.from({length:10000},(_,i)=>Decisions.select([0,1],t,(i+.5)/10000)).filter(i=>i===0).length;
+  assert.ok(count(.5)>count(.1));assert.ok(count(1)>count(.5));
+  for(const t of [-1,NaN,Infinity])assert.throws(()=>Decisions.select([0,1],t,.2));
+  const m=model();m.tacticalPolicy.inferenceTemperature=-1;assert.throws(()=>Policy.validate(m));
+});
+test('seeded sampling repeats exactly across controller resets and produces varied player inputs',()=>{
+  const m=model(),env=new LeagueEnvironment(m,new Pool(config));env.reset();
+  const control=Policy.controller(m,{actorId:'league-learner',slot:0,seed:123});
+  const run=()=>Array.from({length:40},(_,i)=>control({...env.state,tick:i*6}));
+  const first=run();control.reset();assert.deepEqual(run(),first);
+  assert.ok(new Set(first.map(c=>JSON.stringify(c))).size>3);
 });

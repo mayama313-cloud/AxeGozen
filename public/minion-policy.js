@@ -236,7 +236,7 @@
     }
     return { event, data: { x: clip(x, 29), z: clip(z, 29) } };
   }
-  function decide(model, observation, actor, memory = {}, draw = null, directionDraw = null, orderDraw = null) {
+  function decide(model, observation, actor, memory = {}, draw = null, directionDraw = null, orderDraw = null, decisionDraw = null) {
     const me = observation.players.find(p => p.id === actor);
     if (!me || !model.characters.includes(me.character)) return { event: 'noop', data: null };
     const world = root.ArenaWorld || (typeof require === 'function' ? require('../game-world') : null);
@@ -276,7 +276,7 @@
       action.cancelChase = Math.hypot(...point) < .01 || (orderDraw === null ? probability >= .5 : orderDraw < probability);
     }
     if (objective?.fallbackInputs) action.prefixInputs = objective.fallbackInputs;
-    if (model.tacticalPolicy) return (root.MinionDecisions || require('./minion-decisions')).choose(model, observation, actor, action, memory, observationFeatures);
+    if (model.tacticalPolicy) return (root.MinionDecisions || require('./minion-decisions')).choose(model, observation, actor, action, memory, observationFeatures, decisionDraw ?? draw);
     return escapeAction(action) || action;
   }
   function commands(model, state, actor, action) {
@@ -323,7 +323,11 @@
       if (model.weights.directionW) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; directionDraw = seed / 4294967296; }
       let orderDraw = null;
       if (model.weights.orderW) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; orderDraw = seed / 4294967296; }
-      const action = decide(model, state, actor, memory, draw, directionDraw, orderDraw);
+      let decisionDraw = null;
+      if (model.tacticalPolicy && (root.MinionDecisions || require('./minion-decisions')).temperature(model.tacticalPolicy) > 0) {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; decisionDraw = seed / 4294967296;
+      }
+      const action = decide(model, state, actor, memory, draw, directionDraw, orderDraw, decisionDraw);
       return commands(model, state, actor, action);
     };
     act.observe = event => cues.push(event);

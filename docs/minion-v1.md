@@ -219,6 +219,30 @@ node scripts/minion-v1.js rl --model datas/models/minion-v1-rl-v3-farm/model.jso
 
 PPOの元論文: [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347)。
 
+### 目的選択 v7：無駄な操作と中央トナカイ
+
+`datas/models/minion-v1-v7-objectives/model.json` は、v6のactor・防衛用重みを保持したまま、別の小さな目的選択モデルを追加する。目的は元のモデルへの委譲、小型モンスター、中央の大型トナカイ、エネルギー、最初の小型キャンプへの移動。
+24特徴・中間32ユニットのMLPで各目的の価値を評価し、最も高い目的を選ぶ。HP、移動時間、報酬、目撃したHP減少速度、到着時の推定HP、一撃で取れるか、敵との競合、現在の目標、足止めを観測する。非表示のモンスターの現在HPや座標は取得しない。
+
+この追加部分はPPOではなく、狭い判断だけを扱う合成の模範データによる模倣学習。初期データは6,000状況で、状況単位で4,800訓練・1,200検証に分ける。元の不完全なCPUをそのまま教師にはせず、「到着できる低HPの大型を優先」「到着前に倒されるなら追わない」「低HP・リコール・タワー被害中は元モデルへ委譲」を教える。模範スコアは実行時の選択には使わない。
+取得優先の判断には大型HP40%以下の特徴も与える。敵が近い大型の競り合いでは、攻撃用Q/Cは原則として致死ダメージを出せるまで温存する。小型を選んだ場合でも、大型の状況は毎回評価し直す。
+
+目的への経路探索と攻撃操作はアルゴリズムで実行する。選んだ目的を通常のmove/chaseで追い、同じ目標への移動指示を毎回リセットしない。Q/Cは射程内の実在する対象へ向ける。移動経路は公開マップの障害物・タワー・敵安全地帯だけを使い、隠れた敵は経路計算に使わない。すべて通常のプレイヤー入力を通る。
+元モデルへ戻すときは、目的選択層が所有していた古い追跡を解除してから操作を渡す。目的選択の履歴は元actorのハッシュ観測に混ぜない。
+
+```powershell
+# 目的選択層を学習。既存actorの重みは更新しない。
+node scripts/minion-objectives.js train --model datas/models/minion-v1-rl-v6-defense/model.json --output datas/models/minion-v1-v7-objectives --epochs 100
+
+# 同じ条件で旧版と比較する。標準48エピソード、各通常試合60秒。
+node scripts/minion-objectives.js evaluate --model datas/models/minion-v1-v7-objectives/model.json --reference datas/models/minion-v1-rl-v6-defense/model.json
+```
+
+Node.jsがPATHにない場合は、`node`の代わりに`& "$env:TEMP\axegozen-node-runtime\node.exe"`を使う。
+`objective-training.json`は模倣精度、`objective-parity.json`はPython/JavaScriptの目的評価の照合、`comparison.json`はゲーム内比較。生成元データの`objective-prepared.json`は再生成できるためGit管理対象外。
+追加の診断は`large-finish`と`large-contest`。実際のHPを持つ大型に通常の入力で攻撃し、敵とのラストヒット競争も含める。成功は実際の撃破イベントと報酬の獲得で判定し、目的を選んだだけでは成功にしない。
+`unproductiveSeconds`は、生存・行動可能・回復待ちや初回キャンプ待ちでないのに、移動・有効な攻撃・射程内の攻撃対象がない時間。空振り入力数・大型取得数・競り合いでの取得数も比較する。合成データでの精度は対人勝率ではない。
+
 検証コマンド:
 
 ```powershell

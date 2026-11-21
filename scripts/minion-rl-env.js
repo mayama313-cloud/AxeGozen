@@ -63,12 +63,13 @@ class Environment {
     this.metrics = { scenario: this.scenario, character, opponent: this.opponentCharacter, deaths: 0, kills: 0,
       damageDealt: 0, damageReceived: 0, zoneDamage: 0, towersDestroyed: 0, towersLost: 0, recovery: false, lowHp: false, commands: 0,
       lowHpChaseCommands: 0, lowHpStepsTowardHome: 0, lowHpStepsAwayFromHome: 0, attackAttempts: 0, emptyAttacks: 0, rejectedAttacks: 0,
-      ownTowerDamage: 0, defenseDamage: 0, defenseStopped: false, firstDefenseHitSeconds: null };
+      ownTowerDamage: 0, defenseDamage: 0, defenseStopped: false, firstDefenseHitSeconds: null,
+      unproductiveSeconds: 0, largeKills: 0, largeLosses: 0, largeFocusSeconds: null };
     const hooks = {};
     const idle = () => [];
     idle.observe = event => this.cues.push(event);
     idle.observeState = state => { Policy.updateMemory(this.memory, state, 'cpu-player', this.cues, this.model.featureVersion); this.cues = []; };
-    this.game = World.createMatch(false, true, { policy: idle, opponent: this.scenario !== 'defense', onCombat: event => this.combat.push(event) });
+    this.game = World.createMatch(false, true, { policy: idle, opponent: this.scenario !== 'defense' && !this.scenario.startsWith('large-'), onCombat: event => this.combat.push(event) });
     this.game.connect({ id: 'opponent', on(e, fn) { hooks[e] = fn; }, emit() {}, disconnect() {} });
     hooks.selectCpuCharacter({ id: character }); hooks.selectCharacter({ id: this.opponentCharacter }); hooks.confirmCharacter();
     const p = this.game.state.players['cpu-player'], enemy = this.game.state.players.opponent;
@@ -76,6 +77,16 @@ class Environment {
       Object.assign(p, { x: -3 - this.random() * 2, z: 1 + this.random() * 2, hp: p.cfg.maxHp * (0.2 + this.random() * 0.2) });
       const distance = this.scenario === 'retreat-hard' ? 2 : 4;
       Object.assign(enemy, { x: p.x - distance - this.random(), z: p.z + 2 + this.random(), hp: enemy.cfg.maxHp * (0.6 + this.random() * 0.4) });
+    } else if (this.scenario.startsWith('large-')) {
+      while (this.game.observe('cpu-player').time < 5.2) this.game.tick();
+      const boss = Object.values(this.game.state.monsters).find(m => m.large);
+      boss.hp = this.scenario === 'large-contest' ? 60 + this.random() * 60 : 15 + this.random() * 65;
+      Object.assign(p, { x: this.scenario === 'large-contest' ? 12 : 5, z: this.scenario === 'large-contest' ? 2 : 4, hp: p.cfg.maxHp, keys: null, target: null, dest: null });
+      if (this.scenario === 'large-contest') {
+        Object.assign(enemy, { x: -enemy.cfg.atkRange - boss.radius + .3, z: boss.z, keys: null, target: null, dest: null });
+        this.game.input('opponent', 'chase', { id: boss.id });
+      }
+      this.combat = []; this.memory = {}; this.cues = [];
     } else if (this.scenario === 'defense') {
       const tower = this.game.state.towers[`t1-${1 + Math.floor(this.random() * 3)}`];
       this.defenseTower = tower.id;
@@ -111,25 +122,28 @@ class Environment {
       coordinates: Policy.EVENTS.map(event => (event === 'steer' && !this.model.weights.directionW) || ['move', 'chase', 'q', 'leap'].includes(event)
         || (event === 'dash' && ['lucia', 'darius'].includes(me.character)) || (event === 'c' && me.character !== 'lucia') ? 1 : 0) };
   }
-  step(action, autoReset = true) {
+  step(action, autoReset = true, policyAction = null) {
     if (!Number.isInteger(action.type) || action.type < 0 || action.type >= Policy.EVENTS.length || !Array.isArray(action.latent) || action.latent.length !== 2 || !action.latent.every(Number.isFinite)) throw Error('Invalid RL action');
     const mask = Policy.actionMask(this.model, this.state, 'cpu-player', true);
     if (action.direction !== undefined && (!Number.isInteger(action.direction) || action.direction < 0 || action.direction >= 9)) throw Error('Invalid steering direction');
     const point = action.type === 1 && action.direction !== undefined ? Policy.DIRECTIONS[action.direction] : action.latent.map(Math.tanh);
-    const command = mask[action.type] ? Policy.decode(this.model, this.state, 'cpu-player', action.type, point) : { event: 'noop' };
+    const command = policyAction || (mask[action.type] ? Policy.decode(this.model, this.state, 'cpu-player', action.type, point) : { event: 'noop' });
     if (action.cancelOrder !== undefined && action.cancelOrder !== 0 && action.cancelOrder !== 1) throw Error('Invalid chase order');
     if (command.event === 'steer' && this.model.weights.orderW) command.cancelChase = Math.hypot(...point) < .01 || action.cancelOrder === 1;
     const before = this.state.players.find(p => p.id === 'cpu-player'), home = World.MAP.spawns[1];
     const low = !before.dead && before.hp / before.maxHp <= 0.4;
     const beforeDistance = Math.hypot(before.x - home.x, before.z - home.z);
     const defenseThreat = Policy.defenseContext(this.state, 'cpu-player', this.model.init, this.memory);
-    if (low && command.event === 'chase') this.metrics.lowHpChaseCommands++;
-    const attack = command.event === 'q' || command.event === 'leap';
-    const noTarget = command.event === 'q' && emptyAttack(this.state, 'cpu-player', this.game.state.players['cpu-player'].cfg, this.memory);
+    const inputs = Policy.commands(this.model, this.state, 'cpu-player', command);
+    if (low && inputs.some(i => i.event === 'chase')) this.metrics.lowHpChaseCommands++;
+    const qAttempt = inputs.some(i => i.event === 'q'), leapAttempt = inputs.some(i => i.event === 'leap');
+    const attack = qAttempt || leapAttempt;
+    const noTarget = qAttempt && emptyAttack(this.state, 'cpu-player', this.game.state.players['cpu-player'].cfg, this.memory);
+    if (this.metrics.largeFocusSeconds === null && (command.objectiveGoal?.kind === 'large' || inputs.some(i => i.event === 'chase' && i.data?.id === 'monster-0'))) this.metrics.largeFocusSeconds = this.elapsed;
     if (attack) this.metrics.attackAttempts++;
-    for (const input of Policy.commands(this.model, this.state, 'cpu-player', command)) { this.game.input('cpu-player', input.event, input.data); this.metrics.commands++; }
+    for (const input of inputs) { this.game.input('cpu-player', input.event, input.data); this.metrics.commands++; }
     const current = this.game.state.players['cpu-player'];
-    const accepted = command.event === 'q' ? current.qCd > 0 : command.event === 'leap' ? current.eCd > 0 : false;
+    const accepted = qAttempt ? current.qCd > 0 : leapAttempt ? current.eCd > 0 : false;
     let attackReward = 0;
     if (attack && !accepted) { this.metrics.rejectedAttacks++; attackReward = REWARDS.rejectedAttack; }
     else if (noTarget) { this.metrics.emptyAttacks++; attackReward = REWARDS.emptyAttack; }
@@ -140,10 +154,11 @@ class Environment {
     }
     for (let i = 0; i < 3 && this.game.observe('cpu-player').phase === 'playing'; i++) this.game.tick();
     this.state = this.game.observe('cpu-player'); this.elapsed = this.state.time - this.startedAt;
-    let reward = REWARDS.time + attackReward;
+    let reward = REWARDS.time + attackReward, usefulDamage = 0;
     for (const event of this.combat) {
       const contributed = event.source === 'cpu-player' || event.owner === 'cpu-player';
       if (event.kind === 'damage') {
+        if (contributed) usefulDamage += event.amount;
         if (event.slot === 1 && event.targetKind === 'player' && contributed) {
           this.metrics.damageDealt += event.amount; reward += event.amount * REWARDS.heroDamage;
           if (defenseThreat?.attacker?.id === 'opponent') {
@@ -157,6 +172,9 @@ class Environment {
           this.metrics.damageReceived += event.amount; reward += event.amount * REWARDS.damageReceived;
           if (event.zone) { this.metrics.zoneDamage += event.amount; reward += event.amount * REWARDS.zoneDamage; }
         }
+      } else if (event.targetKind === 'monster' && event.large) {
+        if (contributed) this.metrics.largeKills++;
+        else if (event.slot === 0) this.metrics.largeLosses++;
       } else if (event.targetKind === 'player') {
         if (event.targetSlot === 1) { this.metrics.deaths++; reward += REWARDS.death; }
         else if (event.slot === 1 && contributed) { this.metrics.kills++; reward += REWARDS.kill; }
@@ -167,6 +185,14 @@ class Environment {
     }
     this.combat = [];
     const p = this.game.state.players['cpu-player'];
+    const after = this.state.players.find(e => e.id === p.id);
+    const target = [...this.state.players, ...this.state.monsters, ...this.state.robots, ...this.state.towers].find(e => e.id === after.inputs?.target && !e.dead && Number.isFinite(e.x));
+    const inAttackRange = target && Math.hypot(p.x - target.x, p.z - target.z) <= p.cfg.atkRange + (target.slot === 2 ? target.large ? 1.5 : .65 : 0) + .1;
+    const moving = Math.hypot(p.x - before.x, p.z - before.z) > .03;
+    const ownBoundary = this.state.control.find(c => c.slot === p.slot).boundary;
+    const healing = p.hp / p.cfg.maxHp < .95 && (p.slot === 1 ? p.z - p.x : p.x - p.z) < ownBoundary;
+    if (!p.dead && !after.stun && !after.air && !after.warping && !after.charging && !after.grabbing && !after.grabbed && !after.flying
+      && !after.recall && !healing && !moving && !inAttackRange && !usefulDamage && !(command.objectiveGoal?.kind === 'camp' && this.state.time < 5)) this.metrics.unproductiveSeconds += .1;
     if (low && !p.dead) {
       const progress = beforeDistance - Math.hypot(p.x - home.x, p.z - home.z);
       if (progress > 0.02) this.metrics.lowHpStepsTowardHome++;
@@ -185,7 +211,8 @@ class Environment {
     if (this.scenario === 'defense' && tower && !tower.dead && this.metrics.defenseDamage >= 20
       && (enemy.dead || Math.hypot(enemy.x - tower.x, enemy.z - tower.z) > enemy.cfg.atkRange + tower.radius + 2)) this.metrics.defenseStopped = true;
     const defenseTaskFinished = this.scenario === 'defense' && (this.metrics.defenseStopped || enemy.dead || tower.dead || p.dead || this.elapsed >= 18);
-    const terminal = matchFinished || retreatTaskFinished || defenseTaskFinished;
+    const largeTaskFinished = this.scenario.startsWith('large-') && (this.metrics.largeKills > 0 || this.metrics.largeLosses > 0 || p.dead || this.elapsed >= 18);
+    const terminal = matchFinished || retreatTaskFinished || defenseTaskFinished || largeTaskFinished;
     const truncated = !terminal && this.elapsed >= this.options.maxSeconds;
     const phi = terminal ? 0 : potential(this.state, p.id, this.model.init, this.memory);
     reward += this.options.gamma * phi - this.previousPotential; this.previousPotential = phi;
@@ -198,7 +225,8 @@ class Environment {
     if (terminal || truncated) {
       result.episode = { ...this.metrics, episode: this.episode, seconds: this.elapsed, energy: p.energy, return: this.return, winner: matchFinished ? this.state.winner : null, truncated,
         reason: matchFinished ? 'match-finished' : retreatTaskFinished ? this.metrics.recovery ? 'retreat-recovered' : 'retreat-death'
-          : defenseTaskFinished ? this.metrics.defenseStopped ? 'defense-stopped' : 'defense-failed' : 'timeout' };
+          : defenseTaskFinished ? this.metrics.defenseStopped ? 'defense-stopped' : 'defense-failed'
+          : largeTaskFinished ? this.metrics.largeKills ? 'large-secured' : 'large-missed' : 'timeout' };
       if (autoReset) result.observation = this.reset();
     }
     return result;
@@ -212,7 +240,7 @@ function evaluate(model, options) {
   for (let i = 0; i < options.episodes; i++) {
     const env = new Environment(model, { ...options, seed: options.seed + i * 137 });
     const scenarios = options.scenarios || ['match', 'retreat', 'retreat-hard', 'defense'];
-    if (!scenarios.length || scenarios.some(s => !['match', 'retreat', 'retreat-hard', 'defense', 'farm'].includes(s))) throw Error('Invalid evaluation scenarios');
+    if (!scenarios.length || scenarios.some(s => !['match', 'retreat', 'retreat-hard', 'defense', 'farm', 'large-finish', 'large-contest'].includes(s))) throw Error('Invalid evaluation scenarios');
     env.reset(scenarios[i % scenarios.length], characters[Math.floor(i / scenarios.length) % characters.length]);
     let seed = 17;
     const evaluatedModel = { ...model, init: runtimeInit(model) };
@@ -230,7 +258,7 @@ function evaluate(model, options) {
       const target = Policy.label(action, env.state, actor);
       const latent = target.xy.map(n => Math.atanh(Math.max(-0.999999, Math.min(0.999999, n))));
       const direction = action.event === 'steer' && model.weights.directionW ? Policy.DIRECTIONS.findIndex(d => Math.abs(d[0] - target.xy[0]) < 1e-6 && Math.abs(d[1] - target.xy[1]) < 1e-6) : undefined;
-      result = env.step({ type: target.type, latent, direction, cancelOrder: action.cancelChase ? 1 : 0 }, false);
+      result = env.step({ type: target.type, latent, direction, cancelOrder: action.cancelChase ? 1 : 0 }, false, action);
       if (result.episode) { episodes.push(result.episode); break; }
     }
   }

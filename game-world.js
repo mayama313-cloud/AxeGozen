@@ -316,7 +316,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     dmg = r2(dmg * (enhanced ? 2 : 1) * (b.shield > 0 ? 0.5 : 1));
     const dealt = Math.min(b.hp, dmg);
     b.hp = Math.max(0, b.hp - dmg);
-    if (onCombat) onCombat({ kind: 'damage', source: a.id, owner: a.owner || null, slot: a.slot, targetSlot: b.slot,
+    if (onCombat) onCombat({ kind: 'damage', source: a.id, owner: a.owner || null, target: b.id, large: !!b.large, slot: a.slot, targetSlot: b.slot,
       targetKind: b.monster ? 'monster' : b.tower ? 'tower' : isRobot(b) ? 'minion' : 'player',
       zone: a.id.startsWith('zone-'), amount: dealt });
     if (a.character === 'lucia' && !isRobot(a) && !b.tower && !b.monster && !isRobot(b)) heal(a, dealt * a.cfg.lifeSteal);
@@ -336,7 +336,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     };
     // 撃破は試合内全員へ通知する。ブッシュ内の座標はログに含めない。
     const kill = { id: ++killSeq, time: r2(elapsed), attacker: describe(a), victim: describe(b) };
-    if (onCombat) onCombat({ kind: 'kill', source: a.id, owner: a.owner || null, slot: a.slot, targetSlot: b.slot, targetKind: kill.victim.kind });
+    if (onCombat) onCombat({ kind: 'kill', source: a.id, owner: a.owner || null, target: b.id, large: !!b.large, slot: a.slot, targetSlot: b.slot, targetKind: kill.victim.kind });
     for (const viewer of Object.values(players)) {
       viewer.socket.emit('kill', kill);
       if (viewer.socket === cpuSocket && policy?.observe) policy.observe({ event: 'kill', data: kill, time: tickNumber / TICK });

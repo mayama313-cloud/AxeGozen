@@ -49,7 +49,8 @@
     for (const kind of ['obst', 'bushes']) map[kind] = [...(map[kind] || [])].sort((a, b) => sign * (a.x - b.x) || sign * (a.z - b.z));
     walk(scene, 'state', ''); walk(map, 'map', ''); walk(init.cfg, 'cfg', ''); walk(init.characters, 'characters', '');
     // Tower history has reserved inputs in v4; hashing it again would perturb the old policy everywhere.
-    const history = [DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version) ? { ...memory } : memory;
+    const history = [DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version) || memory.objectives ? { ...memory } : memory;
+    if (memory.objectives) delete history.objectives;
     if ([DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version)) delete history.towers;
     walk(history, 'history', '');
     for (let i = 0; i < SIZE; i++) vector[i] = clip(vector[i], 8);
@@ -184,6 +185,7 @@
     }
     if (w.defenseW && (![ADAPTER_VERSION, ALARM_VERSION].includes(model.featureVersion) || !Array.isArray(w.defenseW) || w.defenseW.length !== 41
       || w.defenseW.some(row => !Array.isArray(row) || row.length !== 16 || row.some(n => !Number.isFinite(n))))) throw Error('防衛用の重みが不正です。');
+    if (model.objectivePolicy) (root.MinionObjectives || require('./minion-objectives')).validate(model.objectivePolicy);
     return model;
   }
   function forward(model, x) {
@@ -222,6 +224,8 @@
   function decide(model, observation, actor, memory = {}, draw = null, directionDraw = null, orderDraw = null) {
     const me = observation.players.find(p => p.id === actor);
     if (!me || !model.characters.includes(me.character)) return { event: 'noop', data: null };
+    const objective = model.objectivePolicy ? (root.MinionObjectives || require('./minion-objectives')).plan(model, observation, actor, memory) : null;
+    if (objective && !objective.fallbackInputs) return objective;
     const result = forward(model, features(observation, actor, model.init, memory, model.featureVersion));
     const allowed = actionMask(model, observation, actor);
     let type = 0;
@@ -248,9 +252,12 @@
       const probability = 1 / (1 + Math.exp((result.orders[0] - result.orders[1]) / temperature));
       action.cancelChase = Math.hypot(...point) < .01 || (orderDraw === null ? probability >= .5 : orderDraw < probability);
     }
+    if (objective?.fallbackInputs) action.prefixInputs = objective.fallbackInputs;
     return action;
   }
   function commands(model, state, actor, action) {
+    if (action.objectiveInputs) return action.objectiveInputs;
+    if (action.prefixInputs) return [...action.prefixInputs, ...commands(model, state, actor, { ...action, prefixInputs: null })];
     if (action.event === 'noop') return [];
     if (action.event === 'leap' && model.aimProtocol === 'release-invalid-leap/1') {
       const me = state.players.find(p => p.id === actor), init = model.init;

@@ -69,6 +69,47 @@ function validLanding(from, to, { range, radius, half, blocks, safe, travel = fa
   return [...blocks, safe].every(o => dist(to, o) + 1e-8 >= o.r + radius);
 }
 
+// Shared by algorithm and learned CPUs. Returns ordinary inputs, never a direct state change.
+function retreatInputs(state, actor, intent = null) {
+  const me = state.players.find(p => p.id === actor);
+  if (!me || state.phase !== 'playing' || me.dead || me.stun > 0 || me.air > 0 || me.warping > 0 || me.charging || me.grabbing || me.grabbed || me.flying || me.recall > 0 || me.eCd > 0) return null;
+  const cfg = configFor(me.character), home = SPAWNS[me.slot], d = dist(me, home);
+  if (d < CFG.safeRadius + 2 || me.safe) return null;
+  const threats = [...state.players, ...(state.robots || [])].filter(p => p.slot !== me.slot && p.vis !== false && !p.dead && Number.isFinite(p.x) && Number.isFinite(p.z));
+  const nearby = threats.some(p => dist(me, p) < 14) || state.towers.some(t => t.slot !== me.slot && !t.dead && dist(me, t) < CFG.tower.range + 1);
+  const towardHome = point => point && (point.x - me.x) * (home.x - me.x) + (point.z - me.z) * (home.z - me.z) > 0;
+  const backing = intent?.retreat || intent?.event === 'move' && towardHome(intent.data)
+    || intent?.event === 'steer' && intent.data && intent.data.x * (home.x - me.x) + intent.data.z * (home.z - me.z) > 0;
+  if (!(me.hp / me.maxHp <= .4 && nearby || me.hp / me.maxHp <= .65 && backing)) return null;
+  if (me.character === 'mira' || me.character === 'bastion') {
+    if (me.character === 'mira' && me.speedBoost > 0 || me.character === 'bastion' && (!nearby || me.shield > 0)) return null;
+    return [{ event: 'move', data: { x: home.x, z: home.z } }, ...(me.aiming ? [{ event: 'cancelLeap' }] : []), { event: 'dash' }];
+  }
+  const blocks = [...OBST, ...state.towers.filter(t => !t.dead).map(t => ({ ...t, r: CFG.tower.radius }))];
+  const safe = { ...SPAWNS[1 - me.slot], r: CFG.safeRadius }, face = ang(me, home);
+  const opposing = state.control?.find(c => c.slot !== me.slot);
+  const depth = p => opposing ? Math.max(0, opposing.boundary - (me.slot === 1 ? p.x - p.z : p.z - p.x)) : 0;
+  const towerRisk = p => state.towers.filter(t => t.slot !== me.slot && !t.dead && dist(p, t) <= CFG.tower.range + cfg.radius).length;
+  const enemyRisk = p => threats.reduce((n, e) => n + Math.max(0, 8 - dist(e, p)), 0);
+  const destinations = [];
+  for (const fraction of [1, .75, .5, .25]) for (const offset of [0, -.35, .35, -.7, .7, -1.05, 1.05]) {
+    const step = Math.min(d, cfg.leapRange * fraction), to = { x: me.x + Math.sin(face + offset) * step, z: me.z + Math.cos(face + offset) * step };
+    if (d - dist(to, home) < 2 || depth(to) > depth(me) || towerRisk(to) > towerRisk(me) || enemyRisk(to) > enemyRisk(me) + .1) continue;
+    if (!validLanding(me, to, { range: cfg.leapRange, radius: cfg.radius, half: HALF, blocks, safe, travel: me.character !== 'lucia' })) continue;
+    if (me.character === 'darius' && blocks.some(o => {
+      const dx = to.x - me.x, dz = to.z - me.z, t = Math.max(0, Math.min(1, ((o.x - me.x) * dx + (o.z - me.z) * dz) / (step * step)));
+      return Math.hypot(me.x + t * dx - o.x, me.z + t * dz - o.z) < o.r + cfg.radius;
+    })) continue;
+    destinations.push({ ...to, score: d - dist(to, home) - enemyRisk(to) - 4 * towerRisk(to) });
+  }
+  destinations.sort((a, b) => b.score - a.score);
+  if (!destinations.length) return null;
+  const { x, z } = destinations[0], to = { x, z }, inputs = [{ event: 'move', data: to }];
+  if (me.character === 'alex') { if (!me.aiming) inputs.push({ event: 'dash' }); inputs.push({ event: 'leap', data: to }); }
+  else inputs.push({ event: 'dash', data: to });
+  return inputs;
+}
+
 function createMatch(solo = false, cpu = false, { trace = null, policy = null, opponent = false, onCombat = null, controllers = null, teamSizes = null } = {}) {
   if (controllers && (!Array.isArray(controllers) || controllers.length !== 2 || controllers.some(c => c !== null && typeof c !== 'function'))) throw Error('controllers must contain two policies or null for algorithm');
   if (teamSizes && (!Array.isArray(teamSizes) || teamSizes.length !== 2 || teamSizes.some(n => !Number.isInteger(n) || n < 1 || n > 5))) throw Error('Each team must have 1..5 members');
@@ -761,17 +802,16 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   }
   function cpuMobility(p, foe) {
     if (p.eCd > 0) return;
+    if (p.retreating) {
+      const escape = retreatInputs(view(p), p.id, { retreat: true });
+      if (escape) for (const input of escape) command(p, input.event, input.data);
+      return;
+    }
     const d = foe ? dist(p, foe) : Infinity;
     if (p.character === 'mira') {
-      if (p.retreating || (foe && d > p.cfg.atkRange && d < 18)) command(p, 'dash');
+      if (foe && d > p.cfg.atkRange && d < 18) command(p, 'dash');
     } else if (p.character === 'bastion') {
       if (foe && d < 8 && p.hp < p.cfg.maxHp * 0.85) command(p, 'dash');
-    } else if (p.retreating && p.character === 'lucia') {
-      const home = SPAWNS[p.slot], distance = dist(p, home);
-      if (distance < 3) return;
-      const step = Math.min(p.cfg.leapRange, distance);
-      const to = { x: p.x + (home.x - p.x) / distance * step, z: p.z + (home.z - p.z) / distance * step };
-      if (validDestination(p, to)) command(p, 'dash', to);
     } else if (foe && !foe.dead && d > p.cfg.atkRange + 1 && d < p.cfg.leapRange) {
       if (p.character === 'alex' && !foe.tower && validDestination(p, foe)) {
         if (!p.aiming) command(p, 'dash');
@@ -1073,6 +1113,6 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     empty: () => teamSizes ? Object.values(players).every(p => p.bot) : Object.keys(players).length === 0, state: { players, robots, towers, projectiles, monsters, energy, environment, camps } };
 }
 
-const ArenaWorld = { createMatch, CFG, MAP, TICK, CHARACTERS, characterFor, configFor, validLanding };
+const ArenaWorld = { createMatch, CFG, MAP, TICK, CHARACTERS, characterFor, configFor, validLanding, retreatInputs };
 if (typeof module !== 'undefined' && module.exports) module.exports = ArenaWorld;
 else globalThis.ArenaWorld = ArenaWorld;

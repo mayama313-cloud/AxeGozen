@@ -10,6 +10,36 @@
   const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
   const clip = n => Math.max(-2, Math.min(2, n));
   const config = (model, me) => ({ ...model.init.cfg, ...(model.init.characters.find(c => c.id === me.character)?.stats || {}) });
+  const targetRadius = (model, p) => p.radius ?? (p.slot === 2 ? p.large ? 1.5 : .65 : p.tower ? model.init.cfg.tower.radius : p.owner || !p.character ? .4 : config(model, p).radius);
+  function visibleTargets(state, me) {
+    return [...state.players, ...state.robots.map(p => ({ ...p, radius: p.radius ?? .4 })),
+      ...state.monsters.map(p => ({ ...p, radius: p.large ? 1.5 : .65 })), ...state.towers.map(p => ({ ...p, tower: true }))]
+      .filter(p => p.slot !== me.slot && !p.dead && p.vis !== false && !p.warping && Number.isFinite(p.x) && Number.isFinite(p.z));
+  }
+  function meleeTargetsHero(model, state, me, goal, range) {
+    const cfg = config(model, me), face = Math.atan2(goal.x - me.x, goal.z - me.z);
+    const candidates = visibleTargets(state, me).filter(p => distance(me, p) <= range + targetRadius(model, p)
+      && Math.abs(Math.atan2(Math.sin(Math.atan2(p.x - me.x, p.z - me.z) - face), Math.cos(Math.atan2(p.x - me.x, p.z - me.z) - face))) <= cfg.qArc);
+    candidates.sort((a, b) => distance(me, a) - distance(me, b));
+    return candidates[0]?.id === goal.id;
+  }
+  function shotClear(model, state, me, goal) {
+    const blocks = [...model.init.map.obst, ...visibleTargets(state, me).filter(p => p.id !== goal.id).map(p => ({ ...p, r: targetRadius(model, p) }))];
+    return clear(me, goal, config(model, me).magicRadius, blocks, model.init.map.half);
+  }
+  function flank(model, state, me, goal) {
+    const cfg = config(model, me), d = distance(me, goal);
+    if (d < .1 || d > cfg.atkRange + 2 || shotClear(model, state, me, goal)) return null;
+    const dx = (goal.x - me.x) / d, dz = (goal.z - me.z) / d;
+    const blocks = [...model.init.map.obst, ...state.towers.filter(t => !t.dead).map(t => ({ ...t, r: model.init.cfg.tower.radius })), { ...model.init.map.spawns[1 - me.slot], r: cfg.safeRadius }];
+    const zone = state.control.find(c => c.slot !== me.slot), depth = p => zone ? zone.boundary - (me.slot === 1 ? p.x - p.z : p.z - p.x) : 0;
+    const points = [me.inputs?.dest, ...[2.5, -2.5, 4, -4].map(offset => ({ x: me.x - dz * offset, z: me.z + dx * offset }))].filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.z));
+    for (const point of points) {
+      if (depth(point) > Math.max(0, depth(me)) + 1 || state.towers.some(t => t.slot !== me.slot && !t.dead && distance(t, point) <= model.init.cfg.tower.range + cfg.radius)) continue;
+      if (clear(me, point, cfg.radius, blocks, model.init.map.half) && shotClear(model, state, { ...me, ...point }, goal)) return point;
+    }
+    return null;
+  }
   function validate(policy) {
     const names = policy.version === OFFENSE_VERSION ? OFFENSE_NAMES : NAMES;
     if (![VERSION, OFFENSE_VERSION].includes(policy.version) || JSON.stringify(policy.features) !== JSON.stringify(names) || !Number.isInteger(policy.hiddenSize)
@@ -26,7 +56,7 @@
     const hidden = w.hiddenW.map((row, i) => Math.tanh(row.reduce((n, v, j) => n + v * x[j], w.hiddenB[i])));
     return w.outputW[0].reduce((n, v, j) => n + v * hidden[j], w.outputB[0]);
   }
-  function observe(memory, state) {
+  function observe(memory, state, actor = null) {
     memory.samples ||= {};
     for (const m of state.monsters || []) {
       let samples = memory.samples[m.id] || [];
@@ -34,6 +64,78 @@
       if (!samples.length || state.time > samples.at(-1).time) samples.push({ hp: m.hp, time: state.time });
       memory.samples[m.id] = samples.filter(s => state.time - s.time <= 1.5);
     }
+    if (actor) {
+      const me = state.players.find(p => p.id === actor); memory.enemies ||= {};
+      for (const p of state.players) if (p.slot !== me?.slot && p.vis && !p.dead && Number.isFinite(p.x) && Number.isFinite(p.z)) {
+        let samples = memory.enemies[p.id] || [];
+        if (samples.length && state.time < samples.at(-1).time) samples = [];
+        if (!samples.length || state.time > samples.at(-1).time) samples.push({ x: p.x, z: p.z, time: state.time });
+        memory.enemies[p.id] = samples.filter(s => state.time - s.time <= .6);
+      }
+      for (const id of Object.keys(memory.enemies)) if (state.time - (memory.enemies[id].at(-1)?.time ?? -100) > 1) delete memory.enemies[id];
+    }
+  }
+  // A bounded tactical override for v8: finish a reachable weakened hero before resuming economy.
+  // Uses visible positions and sampled movement only; it does not extend the learned feature schema.
+  function finishTarget(model, state, me, memory, history) {
+    const cfg = config(model, me), towerCfg = model.init.cfg.tower;
+    const heroes = state.players.filter(p => p.slot !== me.slot && p.vis && !p.dead && !p.warping && Number.isFinite(p.x) && Number.isFinite(p.z));
+    const allies = [...state.players, ...state.robots].filter(p => p.slot === me.slot && p.id !== me.id && !p.dead);
+    const lastBasic = [...(history.cues || [])].reverse().find(c => c.event === 'fx' && c.data?.id === me.id && c.data.kind === 'atk');
+    const basicWait = lastBasic ? Math.max(0, cfg.atkCd - (state.time - lastBasic.time)) : 0;
+    const speed = cfg.speed * (me.speedBoost > 0 ? cfg.windMultiplier : 1), options = [];
+    const active = memory.pursuit;
+    if (active && state.time - active.startedAt >= 6) {
+      memory.pursuitCooldown = { id: active.id, until: state.time + 2 }; memory.pursuit = null;
+    }
+    for (const enemy of heroes) {
+      const same = memory.pursuit?.id === enemy.id;
+      if (enemy.hp <= 0 || enemy.hp / enemy.maxHp > (same ? .4 : .35) || memory.pursuitCooldown?.id === enemy.id && state.time < memory.pursuitCooldown.until) continue;
+      const d = distance(me, enemy), enemyCfg = config(model, enemy), samples = memory.enemies?.[enemy.id] || [];
+      const first = samples.find(s => state.time - s.time >= .15), dt = first ? state.time - first.time : 0;
+      const outward = dt > 0 && d > 0 ? Math.max(0, ((enemy.x - first.x) * (enemy.x - me.x) + (enemy.z - first.z) * (enemy.z - me.z)) / dt / d) : enemy.moving ? enemyCfg.speed * (enemy.speedBoost > 0 ? enemyCfg.windMultiplier : 1) : 0;
+      const closing = speed - outward;
+      const catchTime = d <= cfg.atkRange ? 0 : closing > .25 ? (d - cfg.atkRange) / closing : Infinity;
+      const q = me.qCd <= 0 && me.character !== 'darius' ? cfg.qDmg : 0;
+      const magic = me.cCd <= 0 && me.character === 'mira' && shotClear(model, state, me, enemy) ? cfg.magicDmg : 0;
+      const uppercut = me.character === 'darius' && me.cCd <= 0 && meleeTargetsHero(model, state, me, enemy, cfg.cRange) ? cfg.cDmg : 0;
+      const grab = me.character === 'darius' && me.qCd <= 0 && meleeTargetsHero(model, state, me, enemy, cfg.qRange) ? cfg.qDmg : 0;
+      const instantRange = q >= enemy.hp * (enemy.shield > 0 ? 2 : 1) ? cfg.qRange : magic >= enemy.hp * (enemy.shield > 0 ? 2 : 1) ? cfg.magicRange : 0;
+      const rangedFinish = instantRange >= d && clear(me, enemy, .1, model.init.map.obst, model.init.map.half);
+      if ((!rangedFinish && catchTime > (same ? 3 : 2)) || d > 16) continue;
+      const eta = rangedFinish ? 0 : catchTime;
+      const burst = q + magic + uppercut + grab;
+      const hp = enemy.hp * (enemy.shield > 0 ? 2 : 1);
+      const fightTime = rangedFinish ? .4 : Math.max(.4, basicWait + Math.max(0, Math.ceil((hp - burst) / cfg.atkDmg) - 1) * cfg.atkCd + (grab > 0 && hp > uppercut ? 1.1 : .3));
+      if (fightTime > 4 || eta + fightTime > 5) continue;
+      const end = { x: enemy.x + (me.x - enemy.x) / (d || 1) * Math.min(d, rangedFinish ? d : Math.max(.1, cfg.atkRange - .2)),
+        z: enemy.z + (me.z - enemy.z) / (d || 1) * Math.min(d, rangedFinish ? d : Math.max(.1, cfg.atkRange - .2)) };
+      const spawn = model.init.map.spawns[1 - me.slot];
+      if (distance(enemy, spawn) <= cfg.safeRadius || distance(end, spawn) <= cfg.safeRadius + cfg.radius) continue;
+      const guards = heroes.filter(p => p !== enemy && p.hp / p.maxHp > .4 && distance(p, end) < 9);
+      if (guards.length > allies.filter(p => distance(p, end) < 9).length) continue;
+      const opposing = state.control.find(c => c.slot !== me.slot);
+      const depth = p => opposing ? Math.max(0, opposing.boundary - (me.slot === 1 ? p.x - p.z : p.z - p.x)) / Math.SQRT2 : 0;
+      let zone = 0, towers = 0;
+      for (let i = 0; i <= 4; i++) {
+        const point = { x: me.x + (end.x - me.x) * i / 4, z: me.z + (end.z - me.z) * i / 4 };
+        zone += Number(depth(point) > 0) / 5;
+        towers = Math.max(towers, state.towers.filter(t => t.slot !== me.slot && !t.dead && distance(t, point) <= towerCfg.range + cfg.radius).length);
+      }
+      const cost = (eta * zone + (depth(end) > 0 ? fightTime + depth(end) / speed : 0)) * cfg.controlDamage
+        + towers * towerCfg.dmg / towerCfg.atkCd * (eta + fightTime + 1)
+        + (rangedFinish ? 0 : enemyCfg.atkDmg / enemyCfg.atkCd * fightTime);
+      if (me.hp - cost < me.maxHp * .35 || cost > me.hp * .4) continue;
+      if (same && state.time - memory.pursuit.progressAt > 1.5 && d > cfg.atkRange + .5) { memory.pursuitCooldown = { id: enemy.id, until: state.time + 2 }; continue; }
+      options.push({ ...enemy, kind: 'hero', cfg, radius: 0, distance: d, eta, rangedFinish, score: eta + fightTime - (same ? .6 : 0), features: Array(OFFENSE_NAMES.length).fill(0) });
+    }
+    options.sort((a, b) => a.score - b.score);
+    const goal = options.find(p => p.id === memory.pursuit?.id) || options[0];
+    if (goal) {
+      if (memory.pursuit?.id !== goal.id) memory.pursuit = { id: goal.id, startedAt: state.time, progressAt: state.time, distance: goal.distance };
+      else if (goal.distance < memory.pursuit.distance - .2 || goal.distance <= cfg.atkRange) { memory.pursuit.progressAt = state.time; memory.pursuit.distance = goal.distance; }
+    } else memory.pursuit = null;
+    return goal;
   }
   function candidates(model, state, actor, memory, history = {}) {
     const me = state.players.find(p => p.id === actor), cfg = config(model, me);
@@ -159,13 +261,20 @@
   function plan(model, state, actor, history) {
     const me = state.players.find(p => p.id === actor);
     if (!me || state.phase !== 'playing' || me.dead || me.stun > 0 || me.air > 0 || me.warping > 0 || me.charging || me.grabbing || me.grabbed || me.flying) return null;
-    const memory = history.objectives ||= {}; observe(memory, state);
+    const memory = history.objectives ||= {}; observe(memory, state, model.objectivePolicy.version === OFFENSE_VERSION ? actor : null);
     const choices = candidates(model, state, actor, memory, history);
     for (const g of choices) g.score = forward(model.objectivePolicy, g.features);
     // New offensive goals never preempt a recall, low-health retreat or active tower alarm.
-    if (model.objectivePolicy.version === OFFENSE_VERSION && [6, 7, 22].some(i => choices[0].features[i])) choices[0].score = Infinity;
+    const safe = ![6, 7, 22].some(i => choices[0].features[i]);
+    if (model.objectivePolicy.version === OFFENSE_VERSION && !safe) { choices[0].score = Infinity; memory.pursuit = null; }
     choices.sort((a, b) => b.score - a.score);
-    const goal = choices[0];
+    let goal = choices[0];
+    if (model.objectivePolicy.version === OFFENSE_VERSION && safe) {
+      const finish = finishTarget(model, state, me, memory, history);
+      const bossLastHit = goal.kind === 'large' && goal.hp <= goal.damage * 1.5 && goal.distance <= Math.max(goal.cfg.atkRange, goal.cfg.qRange) + goal.radius;
+      if (finish && !bossLastHit) goal = finish;
+      else if (bossLastHit) memory.pursuit = null;
+    }
     if (goal.kind === 'base') {
       const release = !!memory.goal; memory.goal = null; memory.route = null;
       return release ? { fallbackInputs: [{ event: 'move', data: { x: me.x, z: me.z } }] } : null;
@@ -176,21 +285,26 @@
     memory.goal = goal.id; memory.kind = goal.kind;
     const inputs = [], point = { x: goal.x, z: goal.z };
     if (me.aiming) inputs.push({ event: 'cancelLeap' });
-    const combat = ['small', 'large', 'tower'].includes(goal.kind), cfg = goal.cfg;
-    const range = combat ? cfg.atkRange + goal.radius : goal.kind === 'energy' ? .8 : .5;
+    const combat = ['small', 'large', 'tower', 'hero'].includes(goal.kind), cfg = goal.cfg;
+    const range = goal.rangedFinish ? goal.distance + .1 : combat ? cfg.atkRange + goal.radius : goal.kind === 'energy' ? .8 : .5;
     const routeGoal = { ...point, id: goal.id, cfg }, via = waypoint(me, routeGoal, range, model.init, state, memory);
+    const firingPosition = goal.kind === 'hero' && (me.character === 'mira' || goal.distance > cfg.atkRange + .05) ? flank(model, state, me, goal) : null;
     if (me.inputs?.keys) inputs.push({ event: 'steer', data: { x: 0, z: 0 } });
-    if (via) {
+    if (firingPosition) {
+      inputs.push({ event: 'move', data: firingPosition });
+    } else if (via) {
       if (!me.inputs?.dest || distance(me.inputs.dest, via) > .4) inputs.push({ event: 'move', data: via });
     } else if (combat) {
       if (me.inputs?.target !== goal.id) inputs.push({ event: 'chase', data: { id: goal.id } });
       const contested = goal.features[17] > 0;
       const reserve = (goal.kind === 'large' || model.objectivePolicy.version === OFFENSE_VERSION && goal.kind === 'small') && contested;
       if (goal.kind === 'tower' && me.character === 'alex' && me.cCd <= 0 && goal.distance <= 12) inputs.push({ event: 'c', data: point });
-      if (me.cCd <= 0 && me.character === 'darius' && goal.distance <= cfg.cRange + goal.radius && (!reserve || goal.hp <= cfg.cDmg)) inputs.push({ event: 'c', data: point });
+      if (me.cCd <= 0 && me.character === 'darius' && goal.distance <= cfg.cRange + goal.radius && (!reserve || goal.hp <= cfg.cDmg)
+        && (goal.kind !== 'hero' || meleeTargetsHero(model, state, me, goal, cfg.cRange))) inputs.push({ event: 'c', data: point });
       else if (me.cCd <= 0 && me.character === 'mira' && goal.distance <= cfg.magicRange && goal.hp <= cfg.magicDmg
-        && clear(me, point, cfg.magicRadius, model.init.map.obst, model.init.map.half)) inputs.push({ event: 'c', data: point });
-      else if (me.qCd <= 0 && me.character !== 'darius' && goal.distance <= cfg.qRange + goal.radius && (!reserve || goal.hp <= cfg.qDmg)) inputs.push({ event: 'q', data: point });
+        && clear(me, point, cfg.magicRadius, model.init.map.obst, model.init.map.half) && (goal.kind !== 'hero' || shotClear(model, state, me, goal))) inputs.push({ event: 'c', data: point });
+      else if (me.qCd <= 0 && (me.character !== 'darius' || goal.kind === 'hero') && goal.distance <= cfg.qRange + goal.radius && (!reserve || goal.hp <= cfg.qDmg)
+        && (goal.kind !== 'hero' || me.character !== 'darius' || meleeTargetsHero(model, state, me, goal, cfg.qRange))) inputs.push({ event: 'q', data: point });
     } else if (goal.distance > range && (!me.inputs?.dest || distance(me.inputs.dest, point) > .4)) inputs.push({ event: 'move', data: point });
     return { event: inputs[0]?.event || 'noop', data: inputs[0]?.data || null, objectiveInputs: inputs, objectiveGoal: { id: goal.id, kind: goal.kind } };
   }

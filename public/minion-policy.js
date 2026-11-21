@@ -225,6 +225,13 @@
   function decide(model, observation, actor, memory = {}, draw = null, directionDraw = null, orderDraw = null) {
     const me = observation.players.find(p => p.id === actor);
     if (!me || !model.characters.includes(me.character)) return { event: 'noop', data: null };
+    const world = root.ArenaWorld || (typeof require === 'function' ? require('../game-world') : null);
+    const escapeAction = intent => {
+      const inputs = world?.retreatInputs?.(observation, actor, intent);
+      return inputs ? { event: inputs[0].event, data: inputs[0].data, objectiveInputs: inputs, retreatMobility: true } : null;
+    };
+    const escape = escapeAction(null);
+    if (escape) return escape;
     const objective = model.objectivePolicy ? (root.MinionObjectives || require('./minion-objectives')).plan(model, observation, actor, memory) : null;
     if (objective && !objective.fallbackInputs) return objective;
     const result = forward(model, features(observation, actor, model.init, memory, model.featureVersion));
@@ -254,7 +261,7 @@
       action.cancelChase = Math.hypot(...point) < .01 || (orderDraw === null ? probability >= .5 : orderDraw < probability);
     }
     if (objective?.fallbackInputs) action.prefixInputs = objective.fallbackInputs;
-    return action;
+    return escapeAction(action) || action;
   }
   function commands(model, state, actor, action) {
     if (action.objectiveInputs) return action.objectiveInputs;

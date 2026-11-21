@@ -9,10 +9,10 @@ const CFG = {
   tower: { hp: 300, radius: 1.1, count: 5, range: 7, dmg: 5, atkCd: 1 },
   recallTime: 3, inputTimeout: 0.35,
   leapRange: 8, leapTime: 0.45, leapDmg: 45, leapStun: 1, leapHitRange: 2.4,
-  windTime: 3, windMultiplier: 2,
+  windTime: 3, windMultiplier: 1.3,
   magicRange: 14, magicSpeed: 45, magicRadius: 0.35, magicPull: 6, magicStun: 1.5, magicDmg: 30,
   respawn: 5, respawnPerTower: 5,
-  controlHeal: 8, controlDamage: 12, energyShrink: 0.15, energyInterval: 8,
+  controlHeal: 8, controlDamage: 12, energyShrink: 0.15, energyInterval: 8, largeMonsterEnergy: 200,
 };
 const R = CFG.robot;
 const CHARACTERS = [
@@ -21,7 +21,7 @@ const CHARACTERS = [
     skills: { q: { name: 'クレセント', text: '前方を23ダメージで斬り、0.3秒スタン。' }, e: { name: 'ラッシュ', text: 'E長押しで照準、キーを離すか左クリックで射程10の着地点を確定。着地後に近くの敵1体へ45ダメージ・1秒スタン。CD30秒。右クリック・Escで照準解除。' }, c: { name: 'アサルト部隊', text: 'HP80・攻撃力10・速度8のミニオンを1体召喚。最大5体。他のユニットを避けて敵タワーへ進軍し、途中の敵と戦う。' } }, stats: { eCd: 30, qDmg: 23, leapDmg: 45, leapRange: 10 }, robot: { hp: 80, dmg: 10, speed: 8, batch: 1 } },
   { id: 'mira', name: 'ミラ', role: '機動力・遠めの範囲攻撃', color: '#7ddbd3',
     passive: '風の足取り：移動速度が9から11に上昇。',
-    skills: { q: { name: 'フロストファン', text: '射程14の扇形に7ダメージ、1.5秒スタン。CD9秒。' }, e: { name: 'ウィンドステップ', text: '3秒間、移動速度が2倍（11→22）。CD10秒。' }, c: { name: 'マジックスカウト', text: 'カーソル方向へ射程14の高速魔法を放つ。最初に当たった敵ユニットに30ダメージ、最大6引き寄せ、1.5秒スタン。CD11秒。' } },
+    skills: { q: { name: 'フロストファン', text: '射程14の扇形に7ダメージ、1.5秒スタン。CD9秒。' }, e: { name: 'ウィンドステップ', text: '3秒間、移動速度が1.3倍（11→14.3）。CD10秒。' }, c: { name: 'マジックスカウト', text: 'カーソル方向へ射程14の高速魔法を放つ。最初に当たった敵ユニットに30ダメージ、最大6引き寄せ、1.5秒スタン。CD11秒。' } },
     stats: { atkDmg: 15, atkRange: 8, speed: 11, qRange: 14, qArc: Math.PI / 5, qDmg: 7, qStun: 1.5, qCd: 9, eCd: 10, cCd: 11 }, robot: {} },
   { id: 'bastion', name: 'バスティオン', role: '耐久・防衛', color: '#e8bc65',
     passive: '不屈の体：最大HPが200から280に上昇。',
@@ -33,8 +33,8 @@ const CHARACTERS = [
     stats: { qRange: 12, qDmg: 50, qStun: 0, qCd: 6, qSpeed: 26, qRadius: 0.45, qHeal: 30, eCd: 12, cCd: 20, leapRange: 12, leapHitRange: 3, warpTime: 1, warpDmg: 40, lifeSteal: 0.1 }, robot: {} },
   { id: 'darius', name: 'ダリウス', role: '獣・突進・投げ', color: '#dc9255',
     passive: '巨獣の体：最大HP300。受けるスタンが毎回0.5秒長くなる。通常攻撃は15ダメージの至近距離攻撃で、間隔は1.6秒。',
-    skills: { q: { name: '獣王の投擲', text: '近くの敵1体を掴み、0.6秒拘束して前方へ投げる。衝突・着地時に50ダメージ、その後1秒スタン。CD10秒。' }, e: { name: '猪突猛進', text: '射程20の指定地点へ突進。接触した敵に40ダメージ・1秒スタン。壁に当たると停止。CD20秒。' }, c: { name: '猛牙の突き上げ', text: '近距離の敵1体に20ダメージ。真上に浮かせ、2秒スタン。CD5秒。' } },
-    stats: { maxHp: 300, radius: 1.05, speed: 8, atkDmg: 15, atkRange: 2, atkCd: 1.6, stunPenalty: 0.5, qRange: 2.2, qArc: Math.PI / 3, qDmg: 50, qCd: 10, qStun: 0, eCd: 20, cCd: 5, leapRange: 20, chargeSpeed: 25, chargeDmg: 40, chargeStun: 1, holdTime: 0.6, throwRange: 6, throwTime: 0.5, cRange: 2.2, cDmg: 20, cStun: 2, liftTime: 0.6 }, robot: {} },
+    skills: { q: { name: '獣王の投擲', text: '近くの敵1体を掴み、0.6秒拘束して前方へ投げる。衝突・着地時に50ダメージ、その後1秒スタン。CD10秒。' }, e: { name: '猪突猛進', text: '射程20の指定地点へ突進。接触した敵に40ダメージ・0.5秒スタン。壁に当たると停止。CD20秒。' }, c: { name: '猛牙の突き上げ', text: '近距離の敵1体に30ダメージ。真上に浮かせ、0.25秒スタン。CD5秒。' } },
+    stats: { maxHp: 300, radius: 1.05, speed: 8, atkDmg: 15, atkRange: 2, atkCd: 1.6, stunPenalty: 0.5, qRange: 2.2, qArc: Math.PI / 3, qDmg: 50, qCd: 10, qStun: 0, eCd: 20, cCd: 5, leapRange: 20, chargeSpeed: 25, chargeDmg: 40, chargeStun: 0.5, holdTime: 0.6, throwRange: 6, throwTime: 0.5, cRange: 2.2, cDmg: 30, cStun: 0.25, liftTime: 0.6 }, robot: {} },
 ];
 const characterFor = id => CHARACTERS.find(c => c.id === id);
 const configFor = id => { const c = characterFor(id) || CHARACTERS[0]; return { ...CFG, ...c.stats, robot: { ...R, ...c.robot } }; };
@@ -350,7 +350,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
       policyFor(viewer)?.observe?.({ event: 'kill', data: kill, time: tickNumber / TICK });
       if (trace) report({ kind: 'event', actor: viewer.id, event: 'kill', data: kill });
     }
-    award(a, b.monster ? (b.large ? 30 : 8) : b.tower ? 25 : isRobot(b) ? 3 : 15);
+    award(a, b.monster ? (b.large ? CFG.largeMonsterEnergy : 8) : b.tower ? 25 : isRobot(b) ? 3 : 15);
     if (b.monster) {
       const farmer = isRobot(a) ? players[a.owner] : players[a.id];
       if (isAlgorithm(farmer) && !b.large && inControl(b.home, farmer.slot)) farmer.cpuFarmed.add(b.home.id);

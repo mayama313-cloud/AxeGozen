@@ -215,7 +215,7 @@ test('Darius charge reaches a selected point within twenty, hits each enemy once
   a.send('q', aim(q)); a.send('c', aim(q)); a.send('recall');
   assert.equal(p.qCd, 0); assert.equal(p.cCd, 0); assert.equal(p.recall, 0);
   while (q.hp === 200 && p.charge) match.tick();
-  assert.equal(q.hp, 160); assert.ok(q.stun > 0.9);
+  assert.equal(q.hp, 160); assert.ok(q.stun > 0.4 && q.stun <= 0.5);
   ticks(match, 35);
   assert.equal(p.charge, null); assert.ok(Math.hypot(p.x-12,p.z-16) < 1e-8);
   assert.equal(q.hp, 160); assert.equal(robots.guard.hp, 60);
@@ -246,14 +246,14 @@ test('Darius Q holds and throws without damage, then deals fifty and stuns at wa
   ticks(match, 30); assert.equal(q.stun, 0); assert.equal(q.hp, 150);
 });
 
-test('Darius C deals twenty, lifts vertically and applies two seconds plus the victim passive', () => {
+test('Darius C deals thirty, lifts vertically and applies a quarter second plus the victim passive', () => {
   const { match, a, b, p, q, robots } = setup(false, ['darius', 'darius']);
   place(p, 0, 0); place(q, 2, 0); a.send('c', aim(q));
-  assert.equal(p.cCd, 5); assert.equal(q.hp, 280); assert.equal(q.stun, 2.5); assert.ok(q.flight);
+  assert.equal(p.cCd, 5); assert.equal(q.hp, 270); assert.equal(q.stun, 0.75); assert.ok(q.flight);
   assert.equal(Object.keys(robots).length, 0);
   b.send('dash', { x: 10, z: 0 }); assert.equal(q.eCd, 0);
   ticks(match, 9); assert.ok(q.air > 2.9); assert.deepEqual(aim(q), { x: 2, z: 0 });
-  ticks(match, 9); assert.equal(q.flight, null); assert.equal(q.air, 0); assert.ok(Math.abs(q.stun-1.9)<1e-8);
+  ticks(match, 9); assert.equal(q.flight, null); assert.equal(q.air, 0); assert.ok(Math.abs(q.stun-0.15)<1e-8);
   ticks(match, 57); assert.equal(q.stun, 0);
 });
 
@@ -858,10 +858,10 @@ test('missed leaps do not damage distant enemies; stun interrupts an in-flight l
   b.send('q', aim(p)); assert.equal(p.leap, null); assert.equal(p.air, 0); assert.equal(p.stun, 0.3);
 });
 
-test('Mira wind step doubles movement for three seconds with a ten second cooldown and never dashes', () => {
+test('Mira wind step boosts movement by 1.3 for three seconds with a ten second cooldown and never dashes', () => {
   const { match, a, p } = setup(true, ['mira']); place(p, 0, 0);
   a.send('dash'); assert.equal(p.speedBoost, 3); assert.equal(p.eCd, 10); assert.equal(p.dashT, 0);
-  a.send('steer', { x: 1, z: 0 }); match.tick(); assert.ok(Math.abs(p.x - 22 / TICK) < 1e-9);
+  a.send('steer', { x: 1, z: 0 }); match.tick(); assert.ok(Math.abs(p.x - 14.3 / TICK) < 1e-9);
   a.send('steer', { x: 0, z: 0 }); ticks(match, 89); assert.equal(p.speedBoost, 0); assert.ok(p.eCd > 6.9);
   a.send('dash'); assert.equal(p.speedBoost, 0);
   a.send('move', { x: 5, z: 0 }); const before = p.x; match.tick(); assert.ok(Math.abs(p.x - before - 11 / TICK) < 1e-9);
@@ -1122,6 +1122,9 @@ test('monster camps spawn periodically, grant kill energy and respawn after defe
   const small = monsters['monster-2']; place(p, small.x+1, small.z); small.hp=1;
   a.send('q', aim(small)); assert.equal(monsters[small.id], undefined); assert.equal(p.energy, 8);
   assert.equal(a.killEvents.at(-1).victim.kind, 'monster'); assert.equal(p.kills, 0);
+  place(p, large.x + 1, large.z); p.qCd = 0; large.hp = 1;
+  a.send('q', aim(large)); assert.equal(monsters[large.id], undefined); assert.equal(p.energy, 208);
+  assert.equal(match.state.environment.totals[0], 208);
   place(p, MAP.spawns[0].x, MAP.spawns[0].z); ticks(match, TICK*29); assert.equal(monsters[small.id], undefined);
   ticks(match, TICK); assert.ok(monsters[small.id]); assert.equal(camps[2].timer, 0);
 });

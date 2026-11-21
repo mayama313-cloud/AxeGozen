@@ -472,8 +472,9 @@ function hud(st) {
   }
   const own = st.towers.filter(t => t.slot === mySlot && !t.dead).length;
   const enemy = st.towers.filter(t => t.slot !== mySlot && !t.dead).length;
-  $('objective').textContent = `タワー残り　自陣 ${own}/5　敵陣 ${enemy}/5｜エネルギー ${m.energy || 0}｜自陣領域 ${Math.round(100 * (1 + (st.control?.[mySlot]?.boundary || 0) / 60) ** 2)}%`;
-  $('status').textContent = `${socket.mode === 'series' ? '自動対戦・観戦' : st.cpu ? 'CPU対戦' : st.solo ? 'オフライン' : 'オンライン対戦'}｜${character?.name || ''}｜次回の復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}${m.shield > 0 ? '｜ダメージ50%軽減中' : ''}${m.speedBoost > 0 ? `｜移動速度2倍 ${m.speedBoost.toFixed(1)}秒` : ''}`;
+  const territoryPercent = slot => Math.round(100 * (1 + (st.control?.find(c => c.slot === slot)?.boundary || 0) / 60) ** 2);
+  $('objective').textContent = `タワー残り　自陣 ${own}/5　敵陣 ${enemy}/5｜自陣領域 ${territoryPercent(mySlot)}%｜敵陣領域 ${territoryPercent(1 - mySlot)}%`;
+  $('status').textContent = `${socket.mode === 'series' ? '自動対戦・観戦' : st.cpu ? 'CPU対戦' : st.solo ? 'オフライン' : 'オンライン対戦'}｜${character?.name || ''}｜次回の復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}${m.shield > 0 ? '｜ダメージ50%軽減中' : ''}${m.speedBoost > 0 ? `｜移動速度${cfg.windMultiplier}倍 ${m.speedBoost.toFixed(1)}秒` : ''}`;
   $('status').title = character?.passive || '';
   if (socket.replaying) $('status').textContent = 'リプレイ｜' + $('status').textContent;
   if (m.stealth > 0) $('status').textContent += `｜透明化 ${m.stealth.toFixed(1)}秒`;

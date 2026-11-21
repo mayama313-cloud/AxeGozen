@@ -73,7 +73,7 @@
         if (roster && (roster[0][0].kind !== 'human' || roster.some((t, ti) => t.some((m, i) => m.kind === 'human' && (ti !== 0 || i !== 0))))) throw Error('ローカルの人間プレイヤーはAチームの1人目だけです。');
         const listeners = new Map(), match = ArenaWorld.createMatch(mode === 'offline', mode === 'cpu', {
           trace: window.trainingRecorder?.enabled ? entry => window.trainingRecorder.consume(entry) : null,
-          policy: mode === 'cpu' && model ? window.MinionPolicy.controller(model) : null,
+          policy: mode === 'cpu' && model ? window.MinionPolicy.controller({ ...model, init: { ...model.init, cfg: ArenaWorld.CFG, map: ArenaWorld.MAP, characters: ArenaWorld.CHARACTERS } }) : null,
           teamSizes: roster ? roster.map(t => t.length) : null,
         });
         local = {

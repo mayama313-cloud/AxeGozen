@@ -73,7 +73,7 @@ test('a lethal in-range Q secures the actual large-monster reward through ordina
   const label = Policy.label(action, env.state, p.id);
   const result = env.step({ type: label.type, latent: label.xy.map(v => Math.atanh(v)) }, false, action);
   assert.equal(result.episode.reason, 'large-secured'); assert.equal(result.episode.largeKills, 1);
-  assert.ok(p.energy >= 30); assert.equal(env.metrics.emptyAttacks, 0);
+  assert.ok(p.energy >= 200); assert.equal(env.metrics.emptyAttacks, 0);
   assert.equal(env.metrics.attackAttempts, 1);
 });
 test('returning control to the base actor clears an objective chase without changing its features', () => {

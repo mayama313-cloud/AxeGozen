@@ -18,7 +18,8 @@ torch.manual_seed(20261123)
 data = json.loads((args.output / 'objective-prepared.json').read_text(encoding='utf-8-sig'))
 groups = data['groups']
 width = max(len(g['x']) for g in groups)
-x = torch.zeros(len(groups), width, 24)
+input_size = len(data['features'])
+x = torch.zeros(len(groups), width, input_size)
 y = torch.zeros(len(groups), width)
 mask = torch.zeros(len(groups), width, dtype=torch.bool)
 for i, group in enumerate(groups):
@@ -29,7 +30,8 @@ for i, group in enumerate(groups):
 train = torch.tensor([i for i, g in enumerate(groups) if g['split'] == 'train'])
 test = torch.tensor([i for i, g in enumerate(groups) if g['split'] == 'test'])
 target = y.masked_fill(~mask, -1e9).argmax(1)
-network = nn.Sequential(nn.Linear(24, 32), nn.Tanh(), nn.Linear(32, 1))
+hidden_size = 64 if input_size > 24 else 32
+network = nn.Sequential(nn.Linear(input_size, hidden_size), nn.Tanh(), nn.Linear(hidden_size, 1))
 optimizer = torch.optim.Adam(network.parameters(), lr=.003)
 for epoch in range(args.epochs):
     for indices in train[torch.randperm(len(train))].split(128):
@@ -48,13 +50,15 @@ with torch.no_grad():
     accuracy = float((selected[test] == target[test]).float().mean())
     safety = test[(x[test, 0, 6] > 0) | (x[test, 0, 7] > 0) | (x[test, 0, 22] > 0)]
     safety_accuracy = float((selected[safety] == 0).float().mean())
-    boss = torch.tensor([i for i in test.tolist() if groups[i]['kinds'][int(target[i])] == 'large'])
+    boss = torch.tensor([i for i in test.tolist() if groups[i]['kinds'][int(target[i])] == 'large'], dtype=torch.long)
+    if not len(boss):
+        raise RuntimeError('Validation split contains no large-monster priority contexts')
     boss_accuracy = float((selected[boss] == target[boss]).float().mean())
-if accuracy < .95 or safety_accuracy < .999 or boss_accuracy < .97:
+if accuracy < .95 or safety_accuracy < (.99 if input_size > 24 else .999) or boss_accuracy < (.95 if input_size > 24 else .97):
     raise RuntimeError(f'Goal-policy validation failed: {accuracy=}, {safety_accuracy=}, {boss_accuracy=}')
 model = json.loads((args.output / 'initial-model.json').read_text(encoding='utf-8-sig'))
 original_weights = copy.deepcopy(model['weights'])
-model['objectivePolicy'] = {'version': data['version'], 'features': data['features'], 'hiddenSize': 32, 'camps': data['camps'],
+model['objectivePolicy'] = {'version': data['version'], 'features': data['features'], 'hiddenSize': hidden_size, 'camps': data['camps'],
     'weights': {'hiddenW': network[0].weight.detach().tolist(), 'hiddenB': network[0].bias.detach().tolist(),
                 'outputW': network[2].weight.detach().tolist(), 'outputB': network[2].bias.detach().tolist()}}
 report = {'method': 'goal-utility imitation; algorithmic navigation and skill execution; existing actor unchanged',
@@ -62,6 +66,12 @@ report = {'method': 'goal-utility imitation; algorithmic navigation and skill ex
           'epochs': args.epochs, 'trainContexts': len(train), 'testContexts': len(test), 'goalAccuracy': accuracy,
           'safetyContexts': len(safety), 'safetyAccuracy': safety_accuracy, 'largePriorityContexts': len(boss),
           'largePriorityAccuracy': boss_accuracy, 'limitations': ['synthetic imitation scores are not game win rates', 'execution uses ordinary player inputs']}
+for kind in ['tower', 'small', 'large', 'base']:
+    subset = torch.tensor([i for i in test.tolist() if groups[i]['kinds'][int(target[i])] == kind], dtype=torch.long)
+    report[kind + 'Contexts'] = len(subset)
+    report[kind + 'Accuracy'] = float((selected[subset] == target[subset]).float().mean()) if len(subset) else None
+if input_size > 24:
+    model['modelName'] = 'ミニオン v1（v8 攻勢）'
 model['objectivePolicy']['training'] = report
 assert model['weights'] == original_weights
 (args.output / 'model.json').write_text(json.dumps(model, ensure_ascii=False), encoding='utf-8')

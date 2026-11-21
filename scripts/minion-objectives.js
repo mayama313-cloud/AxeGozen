@@ -7,8 +7,9 @@ const Policy = require('../public/minion-policy');
 const Goals = require('../public/minion-objectives');
 const { readJSON, parseJSON } = require('./minion-input');
 const arg = (key, fallback) => { const i = process.argv.indexOf('--' + key); return i < 0 ? fallback : process.argv[i + 1]; };
-const output = path.resolve(arg('output', 'datas/models/minion-v1-v7-objectives'));
-const sourcePath = path.resolve(arg('model', process.argv[2] === 'evaluate' ? path.join(output, 'model.json') : 'datas/models/minion-v1-rl-v6-defense/model.json'));
+const offense = process.argv.includes('--offense');
+const output = path.resolve(arg('output', offense ? 'datas/models/minion-v1-v8-offense' : 'datas/models/minion-v1-v7-objectives'));
+const sourcePath = path.resolve(arg('model', process.argv[2] === 'evaluate' ? path.join(output, 'model.json') : offense ? 'datas/models/minion-v1-v7-objectives/model.json' : 'datas/models/minion-v1-rl-v6-defense/model.json'));
 let seed = Number(arg('seed', '20261123')) >>> 0;
 const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
 
@@ -17,7 +18,7 @@ function prepare() {
   if (path.dirname(sourcePath) === output) throw Error('Use a separate output directory');
   fs.mkdirSync(output, { recursive: true });
   const camps = World.createMatch(true).state.camps.map(({ id, x, z, large }) => ({ id, x, z, large }));
-  model.objectivePolicy = { camps };
+  model.objectivePolicy = { camps, version: offense ? Goals.OFFENSE_VERSION : Goals.VERSION };
   const prototypes = model.characters.map(character => {
     const handlers = {}, game = World.createMatch(false, true, { policy: () => [] });
     game.connect({ id: 'opponent', on(e, fn) { handlers[e] = fn; }, emit() {}, disconnect() {} });
@@ -25,7 +26,7 @@ function prepare() {
     for (let i = 0; i < 165; i++) game.tick();
     return game.observe('cpu-player');
   });
-  const groups = [], count = Number(arg('groups', '6000'));
+  const groups = [], count = Number(arg('groups', offense ? '12000' : '6000'));
   if (!Number.isInteger(count) || count < 100 || count > 100000) throw Error('groups must be 100..100000');
   for (let i = 0; i < count; i++) {
     const state = structuredClone(prototypes[i % prototypes.length]), me = state.players.find(p => p.id === 'cpu-player'), enemy = state.players.find(p => p.id !== me.id);
@@ -35,13 +36,26 @@ function prepare() {
     if (random() < .3) Object.assign(enemy, { x: me.x + random() * 10 - 5, z: me.z + random() * 10 - 5 });
     else if (random() < .5) Object.assign(enemy, { x: 2, z: 3 });
     enemy.vis = random() > .1;
+    if (offense) {
+      enemy.dead = random() < .25; enemy.hp = enemy.maxHp * (.1 + random() * .9);
+      state.control.forEach(c => { c.boundary = -random() * 28; });
+      state.towers.forEach(t => { t.dead = random() < .18; t.hp = t.dead ? 0 : 10 + random() * 290; });
+      if (i % 6 === 0) { Object.assign(me, { x: -8, z: 6, hp: me.maxHp }); Object.assign(enemy, { x: 22, z: -24, vis: true, dead: false }); }
+    }
     if (!enemy.vis) { delete enemy.x; delete enemy.z; }
     const history = { towers: {}, cues: [] }, memory = { samples: {} };
     if (random() < .2) history.towers['t1-2'] = { hp: 200, hitAt: state.time };
     for (const monster of state.monsters) {
       monster.hp = 1 + random() ** 2 * (monster.maxHp - 1);
-      const rate = monster.large ? [0, 10, 25, 50, 100][Math.floor(random() * 5)] : 0;
+      const rate = monster.large || offense ? [0, 10, 25, 50, 100][Math.floor(random() * 5)] : 0;
       memory.samples[monster.id] = [{ hp: Math.min(monster.maxHp, monster.hp + rate * .5), time: state.time - .5 }, { hp: monster.hp, time: state.time }];
+    }
+    if (offense && i % 5 === 0) state.monsters = [];
+    if (offense && i % 5 === 1 && state.monsters.length) {
+      const m = state.monsters[i % state.monsters.length];
+      Object.assign(me, { x: m.x + 5, z: m.z + 1, hp: me.maxHp });
+      Object.assign(enemy, { x: m.x - 3, z: m.z, hp: enemy.maxHp, vis: true, dead: false });
+      m.hp = 20 + random() * 25; memory.samples[m.id] = [{ hp: m.hp + 15, time: state.time - .5 }, { hp: m.hp, time: state.time }];
     }
     if (state.time < 5) state.monsters = [];
     state.energy = Array.from({ length: Math.floor(random() * 4) }, (_, j) => ({ id: 'energy-' + j, amount: 5, x: random() < .5 ? me.x + random() * 8 - 4 : random() * 4 - 2, z: random() * 4 - 2 }));
@@ -50,11 +64,11 @@ function prepare() {
       memory.progressAt = state.time - random() * 4;
     }
     const choices = Goals.candidates(model, state, me.id, memory, history);
-    groups.push({ id: i, split: i % 5 === 0 ? 'test' : 'train', x: choices.map(g => g.features), y: choices.map(Goals.teacher), kinds: choices.map(g => g.kind) });
+    groups.push({ id: i, split: (offense ? random() < .2 : i % 5 === 0) ? 'test' : 'train', x: choices.map(g => g.features), y: choices.map(Goals.teacher), kinds: choices.map(g => g.kind) });
   }
-  const data = { version: Goals.VERSION, features: Goals.NAMES, camps, seed: Number(arg('seed', '20261123')), groups,
+  const data = { version: offense ? Goals.OFFENSE_VERSION : Goals.VERSION, features: offense ? Goals.OFFENSE_NAMES : Goals.NAMES, camps, seed: Number(arg('seed', '20261123')), groups,
     source: sourcePath, sourceSha256: crypto.createHash('sha256').update(sourceBytes).digest('hex'),
-    teacher: 'focused synthetic demonstrations: useful farming, safety, and reachable low-HP large-monster last hits' };
+    teacher: offense ? 'synthetic offensive opportunities: last-hit steals, enemy camps, tower openings, zone/tower cost, safety and defense' : 'focused synthetic demonstrations: useful farming, safety, and reachable low-HP large-monster last hits' };
   fs.writeFileSync(path.join(output, 'objective-prepared.json'), JSON.stringify(data));
   fs.writeFileSync(path.join(output, 'initial-model.json'), sourceBytes);
   console.log(JSON.stringify({ groups: count, output }));

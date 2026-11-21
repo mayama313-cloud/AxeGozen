@@ -158,7 +158,8 @@ function smoke() {
   }
   if (command === 'rl') {
     const initial = path.resolve(arg('model', path.join(root, 'datas/models/minion-v1/model.json')));
-    Policy.validate(readJSON(initial));
+    const initialModel = Policy.validate(readJSON(initial));
+    if (initialModel.leagueTraining) throw Error('v12リーグモデルの追加学習には rl ではなく league コマンドを使ってください。');
     if (process.argv.includes('--combat-decisions')) {
       const args = [path.join(__dirname, 'train-minion-decisions.py'), '--model', initial, '--output', output, '--node', process.execPath];
       if (process.argv.includes('--scope-encounter')) args.push('--scope-encounter');

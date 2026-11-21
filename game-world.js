@@ -69,11 +69,13 @@ function validLanding(from, to, { range, radius, half, blocks, safe, travel = fa
   return [...blocks, safe].every(o => dist(to, o) + 1e-8 >= o.r + radius);
 }
 
-function createMatch(solo = false, cpu = false, { trace = null, policy = null } = {}) {
+function createMatch(solo = false, cpu = false, { trace = null, policy = null, opponent = false, onCombat = null } = {}) {
   let tickNumber = 0;
   const report = data => { if (trace) trace({ tick: tickNumber, time: tickNumber / TICK, ...data }); };
   const inputEvents = new Set(['steer', 'move', 'chase', 'q', 'dash', 'c', 'leap', 'cancelLeap', 'recall']);
   let cpuSocket = null;
+  const isAlgorithm = p => !!p && ((p.socket === cpuSocket && !policy) || (opponent && p.slot === 0 && !!p.socket));
+  const command = (p, event, data) => p.commands?.[event]?.(data);
   const players = {}, robots = {}, towers = {}, projectiles = {}, monsters = {}, energy = {};
   const environment = { enabled: true, totals: [0, 0] };
   let energySeq = 0, energyTimer = 0;
@@ -216,12 +218,12 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     start.cost = 0; start.score = dist(start, goal);
     // 到達不能な目的地でも、1回の探索でフレーム全体を使い切らない。
     let explored = 0;
-    const searchLimit = r.socket === cpuSocket ? 4096 : 512;
+    const searchLimit = isAlgorithm(r) ? 4096 : 512;
     while (open.length && explored++ < searchLimit) {
       let best = 0;
       for (let i = 1; i < open.length; i++) if (open[i].score < open[best].score) best = i;
       const current = open.splice(best, 1)[0], id = key(current.x, current.z);
-      if (dist(current, goal) <= stop && !(r.socket === cpuSocket && r.character === 'mira' && unit(goal.id) && !cpuShotClear({ ...current, slot: r.slot }, goal))) {
+      if (dist(current, goal) <= stop && !(isAlgorithm(r) && r.character === 'mira' && unit(goal.id) && !cpuShotClear({ ...current, slot: r.slot }, goal))) {
         const path = [];
         for (let n = current; n; n = n.parent) path.unshift({ x: n.x, z: n.z });
         return path;
@@ -244,7 +246,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     const blocks = navigationBlocks(r), d = dist(r, goal), stop = Math.max(0.1, range - 0.12);
     const approach = { x: goal.x + (r.x - goal.x) / d * stop, z: goal.z + (r.z - goal.z) / d * stop };
     let waypoint = approach;
-    if (!clearSegment(r, approach, r.radius, blocks) || (r.socket === cpuSocket && r.character === 'mira' && unit(goal.id) && !cpuShotClear({ ...approach, slot: r.slot }, goal))) {
+    if (!clearSegment(r, approach, r.radius, blocks) || (isAlgorithm(r) && r.character === 'mira' && unit(goal.id) && !cpuShotClear({ ...approach, slot: r.slot }, goal))) {
       r.pathAge = (r.pathAge || 0) + DT;
       const changedTarget = r.pathTarget !== goal.id;
       const movedTarget = r.pathGoal && dist(r.pathGoal, goal) > 1;
@@ -266,7 +268,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     for (const turn of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4, 1.8, -1.8, 2.2, -2.2, 2.6, -2.6, Math.PI]) {
       const face = heading + turn, next = { x: r.x + Math.sin(face) * step, z: r.z + Math.cos(face) * step };
       if (!clearSegment(r, next, r.radius, blocks) || others.some(e => dist(next, e) < r.radius + e.radius + 0.03)) continue;
-      if (r.socket === cpuSocket) recordInput(r, 'steer', { x: Math.sin(face), z: Math.cos(face) }, 'derived');
+      if (isAlgorithm(r)) recordInput(r, 'steer', { x: Math.sin(face), z: Math.cos(face) }, 'derived');
       r.x = next.x; r.z = next.z; r.face = face; r.moving = step > 0.001;
       return;
     }
@@ -314,6 +316,9 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     dmg = r2(dmg * (enhanced ? 2 : 1) * (b.shield > 0 ? 0.5 : 1));
     const dealt = Math.min(b.hp, dmg);
     b.hp = Math.max(0, b.hp - dmg);
+    if (onCombat) onCombat({ kind: 'damage', source: a.id, slot: a.slot, targetSlot: b.slot,
+      targetKind: b.monster ? 'monster' : b.tower ? 'tower' : isRobot(b) ? 'minion' : 'player',
+      zone: a.id.startsWith('zone-'), amount: dealt });
     if (a.character === 'lucia' && !isRobot(a) && !b.tower && !b.monster && !isRobot(b)) heal(a, dealt * a.cfg.lifeSteal);
     b.recall = 0;
     emitSee(b, 'hit', { id: b.id, source: a.id, dmg, boosted: enhanced });
@@ -331,6 +336,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     };
     // 撃破は試合内全員へ通知する。ブッシュ内の座標はログに含めない。
     const kill = { id: ++killSeq, time: r2(elapsed), attacker: describe(a), victim: describe(b) };
+    if (onCombat) onCombat({ kind: 'kill', slot: a.slot, targetSlot: b.slot, targetKind: kill.victim.kind });
     for (const viewer of Object.values(players)) {
       viewer.socket.emit('kill', kill);
       if (viewer.socket === cpuSocket && policy?.observe) policy.observe({ event: 'kill', data: kill, time: tickNumber / TICK });
@@ -339,7 +345,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     award(a, b.monster ? (b.large ? 30 : 8) : b.tower ? 25 : isRobot(b) ? 3 : 15);
     if (b.monster) {
       const farmer = isRobot(a) ? players[a.owner] : players[a.id];
-      if (farmer?.socket === cpuSocket && !b.large && inControl(b.home, farmer.slot)) farmer.cpuFarmed.add(b.home.id);
+      if (isAlgorithm(farmer) && !b.large && inControl(b.home, farmer.slot)) farmer.cpuFarmed.add(b.home.id);
       delete monsters[b.id];
       const camp = camps.find(c => c.id === b.id);
       if (camp) camp.timer = b.large ? 45 : 30;
@@ -569,18 +575,21 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
   function connect(socket) {
     const slot = [0, 1].find(s => !Object.values(players).some(p => p.slot === s));
     if (slot === undefined) { socket.emit('full'); socket.disconnect(); return false; }
-    const p = players[socket.id] = { id: socket.id, socket, slot, radius: CFG.radius, kills: 0, atkCd: 0, qCd: 0, eCd: 0, cCd: 0, character: null, confirmed: false, cfg: configFor('alex') };
-    const listen = (event, fn) => socket.on(event, data => {
+    const p = players[socket.id] = { id: socket.id, socket, commands: {}, slot, radius: CFG.radius, kills: 0, atkCd: 0, qCd: 0, eCd: 0, cCd: 0, character: null, confirmed: false, cfg: configFor('alex') };
+    const listen = (event, fn) => {
+      const receive = data => {
       const wasActive = active();
       if (inputEvents.has(event)) recordInput(p, event, data);
       fn(data);
       if (wasActive && phase === 'finished') recordFrame();
-    });
+      };
+      p.commands[event] = receive; socket.on(event, receive);
+    };
     spawn(p);
     if (solo || Object.keys(players).length === 2) phase = 'selecting';
     const init = { id: p.id, slot, cfg: CFG, map: MAP, solo, cpu, characters: CHARACTERS, rulesVersion: 'minion-v1-collection-1' };
     socket.emit('init', init);
-    report({ kind: 'init', actor: p.id, source: socket === cpuSocket ? policy ? 'model' : 'algorithm' : 'human', data: init });
+    report({ kind: 'init', actor: p.id, source: isAlgorithm(p) ? 'algorithm' : socket === cpuSocket ? 'model' : 'human', data: init });
     listen('selectCharacter', d => {
       if (phase !== 'selecting' || p.confirmed || !characterFor(d?.id)) return;
       p.character = d.id; p.cfg = configFor(d.id); spawn(p);
@@ -722,25 +731,25 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     if (p.eCd > 0) return;
     const d = foe ? dist(p, foe) : Infinity;
     if (p.character === 'mira') {
-      if (p.retreating || (foe && d > p.cfg.atkRange && d < 18)) cpuSocket.send('dash');
+      if (p.retreating || (foe && d > p.cfg.atkRange && d < 18)) command(p, 'dash');
     } else if (p.character === 'bastion') {
-      if (foe && d < 8 && p.hp < p.cfg.maxHp * 0.85) cpuSocket.send('dash');
+      if (foe && d < 8 && p.hp < p.cfg.maxHp * 0.85) command(p, 'dash');
     } else if (p.retreating && p.character === 'lucia') {
       const home = SPAWNS[p.slot], distance = dist(p, home);
       if (distance < 3) return;
       const step = Math.min(p.cfg.leapRange, distance);
       const to = { x: p.x + (home.x - p.x) / distance * step, z: p.z + (home.z - p.z) / distance * step };
-      if (validDestination(p, to)) cpuSocket.send('dash', to);
+      if (validDestination(p, to)) command(p, 'dash', to);
     } else if (foe && !foe.dead && d > p.cfg.atkRange + 1 && d < p.cfg.leapRange) {
       if (p.character === 'alex' && !foe.tower && validDestination(p, foe)) {
-        if (!p.aiming) cpuSocket.send('dash');
-        cpuSocket.send('leap', foe);
+        if (!p.aiming) command(p, 'dash');
+        command(p, 'leap', foe);
       } else if (p.character === 'darius' && !foe.tower && cpuShotClear(p, foe) && validDestination(p, foe)) {
-        cpuSocket.send('dash', foe);
+        command(p, 'dash', foe);
       } else if (p.character === 'lucia') {
         const stop = p.radius + foe.radius + 0.2;
         const to = { x: foe.x + (p.x - foe.x) / d * stop, z: foe.z + (p.z - foe.z) / d * stop };
-        if (validDestination(p, to)) cpuSocket.send('dash', to);
+        if (validDestination(p, to)) command(p, 'dash', to);
       }
     }
   }
@@ -767,9 +776,9 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
   function thinkCpu(p) {
     p.thinkTime = decay(p.thinkTime);
     if (p.thinkTime > 0) return;
-    if (policy) {
+    if (p.socket === cpuSocket && policy) {
       p.thinkTime = 0.1;
-      for (const command of policy(view(p)) || []) if (inputEvents.has(command.event)) cpuSocket.send(command.event, command.data);
+      for (const action of policy(view(p)) || []) if (inputEvents.has(action.event)) command(p, action.event, action.data);
       return;
     }
     p.thinkTime = 0.2;
@@ -778,7 +787,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     if (p.retreating) {
       p.target = null;
       p.dest = dist(p, SPAWNS[p.slot]) > 2 ? { ...SPAWNS[p.slot], id: 'home' } : null;
-      if (p.character === 'lucia' && p.stealth <= 0 && !protectedUnit(p)) cpuSocket.send('c');
+      if (p.character === 'lucia' && p.stealth <= 0 && !protectedUnit(p)) command(p, 'c');
       cpuMobility(p, null);
       return;
     }
@@ -812,8 +821,8 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     const useC = p.character === 'darius' ? !foe.tower && d <= p.cfg.cRange + foe.radius
       : p.character === 'mira' ? !foe.tower && d < CFG.magicRange && cpuShotClear(p, foe)
       : p.character === 'lucia' ? !foe.tower && d < 12 && p.stealth <= 0 : d < 14;
-    if (useC && p.cCd <= 0) cpuSocket.send('c', foe);
-    if (!foe.dead && d <= p.cfg.qRange + foe.radius && p.qCd <= 0 && !(p.character === 'darius' && foe.tower)) cpuSocket.send('q', foe);
+    if (useC && p.cCd <= 0) command(p, 'c', foe);
+    if (!foe.dead && d <= p.cfg.qRange + foe.radius && p.qCd <= 0 && !(p.character === 'darius' && foe.tower)) command(p, 'q', foe);
     cpuMobility(p, foe);
   }
   // 大型モンスターの中心ではなく、体の外周を攻撃可能な距離として扱う。
@@ -826,7 +835,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     if (tickForced(r)) return;
     pullUnit(r);
     if (r.stun > 0) { r.stun = decay(r.stun); r.moving = false; return; }
-    const farming = owner.socket === cpuSocket && !policy && cpuFarming(owner);
+    const farming = isAlgorithm(owner) && cpuFarming(owner);
     const marching = isAlexMinion(r) && !farming;
     let objective = towers[r.objective];
     if (marching && (!objective || objective.dead)) {
@@ -860,7 +869,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     pushOut(r); updateBush(r);
   }
   function tickPlayer(p) {
-    if (p.socket === cpuSocket && !policy) observeCpu(p);
+    if (isAlgorithm(p)) observeCpu(p);
     if (p.socket === cpuSocket && policy?.observeState) policy.observeState(view(p));
     for (const cd of ['atkCd', 'qCd', 'eCd', 'cCd']) p[cd] = Math.max(0, p[cd] - DT);
     if (p.dead) { p.respawn = decay(p.respawn); if (p.respawn <= 0) spawn(p); return; }
@@ -887,7 +896,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
       if (protectedUnit(p)) p.hp = Math.min(p.cfg.maxHp, p.hp + CFG.safeHeal * DT);
       return;
     }
-    if (p.socket === cpuSocket) {
+    if (p.socket === cpuSocket || isAlgorithm(p)) {
       thinkCpu(p);
       if (!active() || p.warp || p.charge || p.grabbing) return;
       if (p.leap) { tickLeap(p); return; }
@@ -900,8 +909,8 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
     } else {
       let goal = p.dest;
       if (foe) {
-        if (dist(p, foe) <= reach(p.cfg.atkRange, foe) && (p.socket !== cpuSocket || policy || p.character !== 'mira' || cpuShotClear(p, foe))) {
-          if (p.socket === cpuSocket && !policy) recordInput(p, 'chase', { id: foe.id }, 'derived');
+        if (dist(p, foe) <= reach(p.cfg.atkRange, foe) && (!isAlgorithm(p) || p.character !== 'mira' || cpuShotClear(p, foe))) {
+          if (isAlgorithm(p)) recordInput(p, 'chase', { id: foe.id }, 'derived');
           goal = null; p.face = ang(p, foe);
           if (p.atkCd <= 0) { p.atkCd = p.cfg.atkCd; attack(p, foe, p.cfg.atkDmg); }
         } else if (!p.keys) goal = foe;
@@ -911,7 +920,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
         if (!foe || dist(p, foe) > reach(p.cfg.atkRange, foe)) p.face = Math.atan2(dir.x, dir.z);
       }
       if (goal) {
-        if (p.socket === cpuSocket && !policy) {
+        if (isAlgorithm(p)) {
           march(p, goal, foe ? reach(p.cfg.atkRange, foe) : goal.range || 0.2, speed);
           pushOut(p); updateBush(p);
           if (protectedUnit(p)) p.hp = Math.min(p.cfg.maxHp, p.hp + CFG.safeHeal * DT);
@@ -1025,7 +1034,9 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null } 
       };
   }
   // サーバー内部の状態。Socket.IOのイベントからは直接変更できない。
-  return { connect, tick, empty: () => Object.keys(players).length === 0, state: { players, robots, towers, projectiles, monsters, energy, environment, camps } };
+  return { connect, tick, observe: id => players[id] ? view(players[id]) : null,
+    input: (id, event, data) => { if (inputEvents.has(event) && players[id]) command(players[id], event, data); },
+    empty: () => Object.keys(players).length === 0, state: { players, robots, towers, projectiles, monsters, energy, environment, camps } };
 }
 
 const ArenaWorld = { createMatch, CFG, MAP, TICK, CHARACTERS, characterFor, configFor, validLanding };

@@ -549,16 +549,16 @@ test('keyboard movement preserves in-range automatic attacks and cannot enter en
   }
 });
 
-test('B recalls each player after exactly five seconds, preserving HP and skill cooldowns', () => {
+test('B recalls each player after the configured duration, preserving HP and skill cooldowns', () => {
   for (const slot of [0, 1]) {
     const { match, a, b, p, q } = setup();
     const e = slot ? q : p, sock = slot ? b : a;
     place(e, 0, 0); e.hp = 40; e.cCd = 8;
-    sock.send('recall'); ticks(match, TICK * 5 - 1);
+    sock.send('recall'); ticks(match, TICK * CFG.recallTime - 1);
     assert.deepEqual(aim(e), { x: 0, z: 0 }); assert.ok(e.recall > 0);
     match.tick();
     assert.deepEqual(aim(e), MAP.spawns[slot]); assert.equal(e.recall, 0);
-    assert.ok(e.hp < CFG.maxHp); assert.ok(e.cCd > 2.9);
+    assert.ok(e.hp < CFG.maxHp); assert.ok(e.cCd > 8 - CFG.recallTime - 0.1);
   }
 });
 

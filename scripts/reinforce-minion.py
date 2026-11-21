@@ -1,0 +1,394 @@
+"""PPO fine-tuning against the real Node.js game engine (CPU, no rendered screen)."""
+import argparse
+import copy
+import hashlib
+import json
+import math
+from pathlib import Path
+import random
+import subprocess
+import sys
+import time
+
+import numpy as np
+import torch
+from torch import nn
+from torch.distributions import Categorical, Normal, kl_divergence
+
+
+class ActorCritic(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        size, hidden = model['inputSize'], model['hiddenSize']
+        count = len(model['events'])
+        self.hidden = nn.Linear(size, hidden)
+        self.types = nn.Linear(hidden, count)
+        self.points = nn.Linear(hidden, count * 2)
+        self.direction = nn.Linear(hidden, 9)
+        self.order = nn.Linear(hidden, 2)
+        self.critic_hidden = nn.Linear(size, hidden)
+        self.value = nn.Linear(hidden, 1)
+        self.log_std = nn.Parameter(torch.full((count, 2), math.log(0.25)))
+        for layer, prefix in [(self.hidden, 'hidden'), (self.types, 'type'), (self.points, 'point')]:
+            layer.weight.data.copy_(torch.tensor(model['weights'][prefix + 'W']))
+            layer.bias.data.copy_(torch.tensor(model['weights'][prefix + 'B']))
+        self.critic_hidden.load_state_dict(self.hidden.state_dict())
+        nn.init.zeros_(self.direction.weight)
+        nn.init.zeros_(self.direction.bias)
+        nn.init.zeros_(self.order.weight)
+        self.order.bias.data.copy_(torch.tensor([1., 0.]))
+        if 'directionW' in model['weights']:
+            self.direction.weight.data.copy_(torch.tensor(model['weights']['directionW']))
+            self.direction.bias.data.copy_(torch.tensor(model['weights']['directionB']))
+        if 'orderW' in model['weights']:
+            self.order.weight.data.copy_(torch.tensor(model['weights']['orderW']))
+            self.order.bias.data.copy_(torch.tensor(model['weights']['orderB']))
+        nn.init.zeros_(self.value.weight)
+        nn.init.zeros_(self.value.bias)
+        resume = model.get('reinforcementLearning', {})
+        self.temperature = resume.get('temperature', 1.)
+        if 'valueW' in resume:
+            self.value.weight.data.copy_(torch.tensor(resume['valueW']))
+            self.value.bias.data.copy_(torch.tensor(resume['valueB']))
+            self.log_std.data.copy_(torch.tensor(resume['logStd']))
+        if 'valueHiddenW' in resume:
+            self.critic_hidden.weight.data.copy_(torch.tensor(resume['valueHiddenW']))
+            self.critic_hidden.bias.data.copy_(torch.tensor(resume['valueHiddenB']))
+        self.register_buffer('direction_vectors', torch.tensor([[0, 0], [1, 0], [2 ** -.5, 2 ** -.5], [0, 1], [-2 ** -.5, 2 ** -.5], [-1, 0], [-2 ** -.5, -2 ** -.5], [0, -1], [2 ** -.5, -2 ** -.5]], dtype=torch.float32))
+
+    def forward(self, x):
+        hidden = torch.tanh(self.hidden(x))
+        points = self.points(hidden).reshape(-1, self.log_std.shape[0], 2)
+        directions = (self.direction(hidden) + 1.5 * torch.tanh(points[:, 1]) @ self.direction_vectors.T) / self.temperature
+        value = self.value(torch.tanh(self.critic_hidden(x))).flatten()
+        return self.types(hidden) / self.temperature, points, value, directions, self.order(hidden) / self.temperature
+
+    def distribution(self, x, mask):
+        logits, means, values, directions, orders = self(x)
+        return Categorical(logits=logits.masked_fill(~mask, -1e9)), means, values, Categorical(logits=directions), Categorical(logits=orders)
+
+    def sample(self, x, mask, coordinates):
+        categorical, means, value, steering, orders = self.distribution(x, mask)
+        types = categorical.sample()
+        index = torch.arange(len(x))
+        normal = Normal(means[index, types], self.log_std.exp()[types])
+        latent = normal.sample()
+        direction = steering.sample()
+        cancel_order = orders.sample()
+        point = coordinates[index, types]
+        # The environment receives latent coordinates and applies tanh itself.
+        # PPO therefore scores the unsquashed latent action without a Jacobian.
+        order_used = (types == 1) & (direction != 0)
+        log_prob = categorical.log_prob(types) + normal.log_prob(latent).sum(-1) * point + steering.log_prob(direction) * (types == 1) + orders.log_prob(cancel_order) * order_used
+        return types, latent, direction, cancel_order, log_prob, value
+
+    def score(self, x, mask, coordinates, types, latent, direction, cancel_order):
+        categorical, means, values, steering, orders = self.distribution(x, mask)
+        index = torch.arange(len(x))
+        normal = Normal(means[index, types], self.log_std.exp()[types])
+        point = coordinates[index, types]
+        order_used = (types == 1) & (direction != 0)
+        log_prob = categorical.log_prob(types) + normal.log_prob(latent).sum(-1) * point + steering.log_prob(direction) * (types == 1) + orders.log_prob(cancel_order) * order_used
+        entropy = categorical.entropy() + normal.entropy().sum(-1) * point + steering.entropy() * (types == 1) + orders.entropy() * order_used
+        return log_prob, entropy, values, categorical, means, steering, orders
+
+
+class Engine:
+    def __init__(self, node):
+        self.process = subprocess.Popen([node, str(Path(__file__).with_name('minion-rl-env.js'))],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding='utf-8')
+
+    def call(self, request):
+        self.process.stdin.write(json.dumps(request, separators=(',', ':')) + '\n')
+        self.process.stdin.flush()
+        line = self.process.stdout.readline()
+        if not line:
+            raise RuntimeError('Game engine stopped unexpectedly')
+        result = json.loads(line)
+        if 'error' in result:
+            raise RuntimeError(result['error'])
+        return result
+
+    def close(self):
+        if self.process.poll() is None:
+            try:
+                self.call({'op': 'close'})
+            except (OSError, RuntimeError):
+                pass
+            finally:
+                self.process.stdin.close()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+        for stream in [self.process.stdin, self.process.stdout]:
+            if stream:
+                stream.close()
+
+
+def tensors(observations):
+    return (torch.tensor(np.asarray([o['x'] for o in observations], dtype=np.float32)),
+            torch.tensor([o['mask'] for o in observations], dtype=torch.bool),
+            torch.tensor([o['coordinates'] for o in observations], dtype=torch.float32))
+
+
+def advantages(rewards, values, next_values, terminal, done, gamma, lam):
+    result = torch.zeros_like(rewards)
+    carry = torch.zeros(rewards.shape[1])
+    for step in reversed(range(len(rewards))):
+        delta = rewards[step] + gamma * next_values[step] * (1 - terminal[step]) - values[step]
+        carry = delta + gamma * lam * (1 - done[step]) * carry
+        result[step] = carry
+    return result, result + values
+
+
+def summarize(evaluation):
+    episodes = evaluation['episodes']
+    retreat = [e for e in episodes if e['scenario'].startswith('retreat')]
+    matches = [e for e in episodes if e['scenario'] == 'match']
+    return {'episodes': len(episodes), 'meanReturn': sum(e['return'] for e in episodes) / max(1, len(episodes)),
+            'wins': sum(e['winner'] == 1 for e in episodes), 'losses': sum(e['winner'] == 0 for e in episodes),
+            'timeouts': sum(e['truncated'] for e in episodes), 'deaths': sum(e['deaths'] for e in episodes),
+            'retreatAttempts': len(retreat), 'retreatRecoveries': sum(e['recovery'] for e in retreat),
+            'lowHpChaseCommands': sum(e.get('lowHpChaseCommands', 0) for e in episodes),
+            'lowHpStepsTowardHome': sum(e.get('lowHpStepsTowardHome', 0) for e in episodes),
+            'lowHpStepsAwayFromHome': sum(e.get('lowHpStepsAwayFromHome', 0) for e in episodes),
+            'normalMatchEnergy': sum(e.get('energy', 0) for e in matches) / max(1, len(matches)),
+            'meanEnergy': sum(e.get('energy', 0) for e in episodes) / max(1, len(episodes))}
+
+
+def selection_score(stats):
+    return (stats['retreatRecoveries'] / max(1, stats['retreatAttempts']), stats['wins'] - stats['losses'],
+            -stats['deaths'] / max(1, stats['episodes']), stats['meanReturn'])
+
+
+def eligible_for_selection(stats, baseline):
+    return stats['normalMatchEnergy'] >= baseline['normalMatchEnergy'] * .5 or stats['wins'] > baseline['wins']
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--node', required=True)
+    parser.add_argument('--model', type=Path, required=True)
+    parser.add_argument('--reference-model', type=Path)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--updates', type=int, default=100)
+    parser.add_argument('--steps', type=int, default=128)
+    parser.add_argument('--envs', type=int, default=4)
+    parser.add_argument('--max-seconds', type=float, default=120)
+    parser.add_argument('--retreat-fraction', type=float, default=0.5)
+    parser.add_argument('--eval-episodes', type=int, default=12)
+    parser.add_argument('--eval-seconds', type=float, default=60)
+    parser.add_argument('--eval-every', type=int, default=25)
+    parser.add_argument('--seed', type=int, default=17)
+    args = parser.parse_args()
+    if not (1 <= args.updates <= 100000 and 8 <= args.steps <= 2048 and 1 <= args.envs <= 32 and 1 <= args.max_seconds <= 1200 and 0 <= args.retreat_fraction <= 1 and 2 <= args.eval_episodes <= 100 and 1 <= args.eval_seconds <= 1200 and args.eval_every >= 1):
+        raise ValueError('Invalid RL training parameters')
+    args.output.mkdir(parents=True, exist_ok=True)
+    if args.model.parent.resolve() == args.output.resolve():
+        raise ValueError('Use a separate output directory to preserve the input checkpoint')
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.set_num_threads(min(4, torch.get_num_threads()))
+    base_bytes = args.model.read_bytes()
+    base = json.loads(base_bytes.decode('utf-8-sig'))
+    initial_snapshot = args.output / 'initial-model.json'
+    initial_snapshot.write_text(json.dumps(base, ensure_ascii=False), encoding='utf-8')
+    # Keep existing models unchanged. New RL models reserve explicit tactical inputs
+    # and get a categorical steering head that can explore the opposite direction.
+    base = copy.deepcopy(base)
+    if base.get('featureVersion') != 'minion-tactical/2':
+        base['featureVersion'] = 'minion-tactical/2'
+        for row in base['weights']['hiddenW']:
+            row[-32:] = [0.] * 32
+    base.setdefault('reinforcementLearning', {})['temperature'] = 1.
+    base['movementOrder'] = 'learned-chase-order/1'
+    base['controlProtocol'] = 'release-before-chase/1'
+    warm_start = args.output / 'warm-start-model.json'
+    actor = ActorCritic(base)
+    initial_actor_state = {key: value.clone() for key, value in actor.state_dict().items()}
+    reference_bytes = args.reference_model.read_bytes() if args.reference_model else base_bytes
+    reference_model = json.loads(reference_bytes.decode('utf-8-sig'))
+    if not set(base['characters']).issubset(reference_model['characters']):
+        raise ValueError('Reference model must support every training character')
+    if reference_model.get('featureVersion') != 'minion-tactical/2':
+        reference_model['featureVersion'] = 'minion-tactical/2'
+        for row in reference_model['weights']['hiddenW']:
+            row[-32:] = [0.] * 32
+    reference_model.setdefault('reinforcementLearning', {})['temperature'] = actor.temperature
+    reference = ActorCritic(reference_model).eval()
+    if reference.hidden.weight.shape != actor.hidden.weight.shape:
+        raise ValueError('Reference model architecture does not match the input model')
+    reference_snapshot = args.output / 'imitation-reference.json'
+    reference_snapshot.write_bytes(reference_bytes)
+    for p in reference.parameters():
+        p.requires_grad_(False)
+    optimizer = torch.optim.Adam(actor.parameters(), lr=0.0001)
+    gamma, lam = .997, .99
+    engine = Engine(args.node)
+    start = time.monotonic()
+    report = {'algorithm': 'PPO', 'initialModel': str(args.model), 'initialSnapshot': str(initial_snapshot), 'initialSha256': hashlib.sha256(base_bytes).hexdigest(),
+              'seed': args.seed, 'gamma': gamma, 'gaeLambda': lam, 'clip': .2, 'updates': args.updates,
+              'referenceModel': str(args.reference_model or args.model), 'referenceSha256': hashlib.sha256(reference_bytes).hexdigest(),
+              'envs': args.envs, 'stepsPerUpdate': args.steps, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction,
+              'temperature': actor.temperature, 'evaluationProtocol': 'balanced-tactics/3', 'referenceKlWeight': .02, 'healthyReferenceKlExtra': .2, 'learningRate': .0001,
+              'evalEvery': args.eval_every, 'selectionHistory': [], 'history': [], 'episodes': [],
+              'limitations': ['short runs do not establish improvement', 'the reference algorithm opponent is not a human',
+                              'truncated games are timeouts, not wins', 'checkpoint resume resets the optimizer',
+                              'coordinate exploration is used for training; deployment uses predicted mean coordinates']}
+    def save_model():
+        model = copy.deepcopy(base)
+        model.pop('selection', None)
+        model['init'] = initialized['init']
+        model['reinforcementLearning'] = {k: v for k, v in report.items() if k not in ['history', 'episodes', 'before', 'after', 'warmStart', 'latestAfter', 'selectionHistory', 'selectedCheckpoint']}
+        model['reinforcementLearning']['completedUpdates'] = len(report['history'])
+        model['reinforcementLearning'].update({'valueW': actor.value.weight.detach().tolist(), 'valueB': actor.value.bias.detach().tolist(),
+                                             'valueHiddenW': actor.critic_hidden.weight.detach().tolist(), 'valueHiddenB': actor.critic_hidden.bias.detach().tolist(),
+                                             'logStd': actor.log_std.detach().tolist()})
+        for layer, prefix in [(actor.hidden, 'hidden'), (actor.types, 'type'), (actor.points, 'point'), (actor.direction, 'direction'), (actor.order, 'order')]:
+            model['weights'][prefix + 'W'] = layer.weight.detach().tolist()
+            model['weights'][prefix + 'B'] = layer.bias.detach().tolist()
+        checkpoint = args.output / 'latest-model.json'
+        temporary = args.output / 'model.tmp'
+        temporary.write_text(json.dumps(model, ensure_ascii=False), encoding='utf-8')
+        temporary.replace(checkpoint)
+        return checkpoint
+
+    selected_score = None
+    validation_baseline = None
+    def consider(checkpoint, tag):
+        nonlocal selected_score, validation_baseline
+        measured = engine.call({'op': 'evaluate', 'model': str(checkpoint.resolve()), 'options': selection_options})
+        stats = summarize(measured)
+        if validation_baseline is None:
+            validation_baseline = stats
+        score = selection_score(stats)
+        eligible = eligible_for_selection(stats, validation_baseline)
+        accepted = eligible and (selected_score is None or score > selected_score)
+        report['selectionHistory'].append({'tag': tag, 'summary': stats, 'score': list(score), 'eligible': eligible, 'accepted': accepted})
+        if accepted:
+            selected_score = score
+            report['selectedCheckpoint'] = tag
+            temporary = args.output / 'selected.tmp'
+            selected = json.loads(checkpoint.read_text(encoding='utf-8'))
+            selected['selection'] = {'tag': tag, 'validationSummary': stats}
+            temporary.write_text(json.dumps(selected, ensure_ascii=False), encoding='utf-8')
+            temporary.replace(args.output / 'model.json')
+        print(json.dumps({'selection': tag, 'accepted': accepted, 'summary': stats}), flush=True)
+
+    try:
+        warm = copy.deepcopy(base)
+        warm['weights']['directionW'] = actor.direction.weight.detach().tolist()
+        warm['weights']['directionB'] = actor.direction.bias.detach().tolist()
+        warm['weights']['orderW'] = actor.order.weight.detach().tolist()
+        warm['weights']['orderB'] = actor.order.bias.detach().tolist()
+        warm_start.write_text(json.dumps(warm, ensure_ascii=False), encoding='utf-8')
+        initialized = engine.call({'op': 'init', 'model': str(warm_start.resolve()), 'envs': args.envs,
+                                   'options': {'gamma': gamma, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction, 'seed': args.seed}})
+        report['rewardConfig'] = initialized['rewards']
+        report['potentialConfig'] = initialized['shaping']
+        evaluation_options = {'episodes': args.eval_episodes, 'maxSeconds': args.eval_seconds, 'seed': args.seed + 100000, 'gamma': gamma, 'characters': base['characters']}
+        selection_options = {**evaluation_options, 'seed': args.seed + 200000}
+        report['before'] = engine.call({'op': 'evaluate', 'model': str(initial_snapshot.resolve()), 'options': evaluation_options})
+        print(json.dumps({'before': summarize(report['before'])}), flush=True)
+        report['warmStart'] = engine.call({'op': 'evaluate', 'model': str(warm_start.resolve()), 'options': evaluation_options})
+        print(json.dumps({'warmStart': summarize(report['warmStart'])}), flush=True)
+        consider(reference_snapshot, 'imitation-reference')
+        consider(initial_snapshot, 'initial')
+        consider(warm_start, 'warm-start')
+        observations = initialized['observations']
+        for update in range(args.updates):
+            rollout = {key: [] for key in ['x', 'mask', 'coordinates', 'types', 'latent', 'direction', 'cancelOrder', 'oldLogProb', 'value', 'nextValue', 'reward', 'terminal', 'done']}
+            for step in range(args.steps):
+                x, mask, coordinates = tensors(observations)
+                with torch.no_grad():
+                    types, latent, direction, cancel_order, log_prob, value = actor.sample(x, mask, coordinates)
+                response = engine.call({'op': 'step', 'actions': [{'type': int(t), 'latent': z, 'direction': int(d), 'cancelOrder': int(c)} for t, z, d, c in zip(types.tolist(), latent.tolist(), direction.tolist(), cancel_order.tolist())]})
+                results = response['results']
+                boot_x, _, _ = tensors([r['bootstrap'] for r in results])
+                with torch.no_grad():
+                    _, _, next_value, _, _ = actor(boot_x)
+                entries = {'x': x, 'mask': mask, 'coordinates': coordinates, 'types': types, 'latent': latent, 'direction': direction, 'cancelOrder': cancel_order, 'oldLogProb': log_prob,
+                           'value': value, 'nextValue': next_value, 'reward': torch.tensor([r['reward'] for r in results]),
+                           'terminal': torch.tensor([float(r['terminal']) for r in results]),
+                           'done': torch.tensor([float(r['terminal'] or r['truncated']) for r in results])}
+                for key, v in entries.items():
+                    rollout[key].append(v)
+                for result in results:
+                    if 'episode' in result:
+                        report['episodes'].append(result['episode'])
+                observations = [r['observation'] for r in results]
+            stacked = {key: torch.stack(v) for key, v in rollout.items()}
+            advantage, returns = advantages(stacked['reward'], stacked['value'], stacked['nextValue'], stacked['terminal'], stacked['done'], gamma, lam)
+            advantage = advantage.flatten()
+            advantage = (advantage - advantage.mean()) / (advantage.std(unbiased=False) + 1e-8)
+            returns = returns.flatten()
+            batch = {key: v.flatten(0, 1) for key, v in stacked.items()}
+            losses = []
+            for epoch in range(4):
+                for indices in torch.randperm(len(advantage)).split(128):
+                    score, entropy, value, categorical, means, steering, orders = actor.score(batch['x'][indices], batch['mask'][indices], batch['coordinates'][indices], batch['types'][indices], batch['latent'][indices], batch['direction'][indices], batch['cancelOrder'][indices])
+                    ratio = (score - batch['oldLogProb'][indices]).exp()
+                    policy_loss = -torch.minimum(ratio * advantage[indices], ratio.clamp(.8, 1.2) * advantage[indices]).mean()
+                    value_loss = nn.functional.smooth_l1_loss(value, returns[indices])
+                    with torch.no_grad():
+                        reference_cat, reference_means, _, reference_steering, reference_orders = reference.distribution(batch['x'][indices], batch['mask'][indices])
+                    anchor = kl_divergence(reference_cat, categorical) + .1 * (means - reference_means).square().mean(dim=(1, 2)) + .1 * kl_divergence(reference_steering, steering) + .1 * kl_divergence(reference_orders, orders)
+                    hp = batch['x'][indices, -32].clamp(0, 1)
+                    anchor_weight = .02 + .2 * hp.square()
+                    loss = policy_loss + .5 * value_loss - .01 * entropy.mean() + (anchor_weight * anchor).mean()
+                    if not torch.isfinite(loss):
+                        raise RuntimeError('Non-finite PPO loss')
+                    optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(actor.parameters(), .5)
+                    optimizer.step()
+                    actor.log_std.data.clamp_(math.log(.05), math.log(.6))
+                    losses.append(float(loss.detach()))
+            stats = {'update': update + 1, 'environmentSteps': (update + 1) * args.steps * args.envs,
+                     'meanStepReward': float(stacked['reward'].mean()), 'loss': sum(losses) / len(losses),
+                     'completedEpisodes': len(report['episodes']), 'elapsedSeconds': time.monotonic() - start}
+            report['history'].append(stats)
+            checkpoint = save_model()
+            if (update + 1) % args.eval_every == 0 or update == args.updates - 1:
+                consider(checkpoint, 'update-' + str(update + 1))
+            (args.output / 'rl-training.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+            print(json.dumps(stats), flush=True)
+        checkpoint = save_model()
+        selected_checkpoint = args.output / 'model.json'
+        report['after'] = engine.call({'op': 'evaluate', 'model': str(selected_checkpoint.resolve()), 'options': evaluation_options})
+        report['latestAfter'] = engine.call({'op': 'evaluate', 'model': str(checkpoint.resolve()), 'options': evaluation_options})
+        report['beforeSummary'] = summarize(report['before'])
+        report['warmStartSummary'] = summarize(report['warmStart'])
+        report['afterSummary'] = summarize(report['after'])
+        report['latestSummary'] = summarize(report['latestAfter'])
+        report['elapsedSeconds'] = time.monotonic() - start
+        report['actorWeightChangeL1'] = sum((actor.state_dict()[key] - initial_actor_state[key]).abs().sum().item()
+                                          for key in actor.state_dict() if not key.startswith(('value.', 'critic_hidden.')) and key not in ['log_std', 'direction_vectors'])
+        if not math.isfinite(report['actorWeightChangeL1']) or report['actorWeightChangeL1'] <= 0:
+            raise RuntimeError('Actor parameters did not update')
+        save_model()
+        # Common inference parity format used by the existing smoke command.
+        probe_x, _, _ = tensors(observations[:1])
+        with torch.no_grad():
+            selected_model = json.loads(selected_checkpoint.read_text(encoding='utf-8'))
+            selected_actor = ActorCritic(selected_model)
+            logits, points, _, directions, orders = selected_actor(probe_x)
+        parity = {'x': probe_x[0].tolist(), 'logits': (logits[0] * selected_actor.temperature).tolist(), 'points': torch.tanh(points[0]).flatten().tolist()}
+        if 'directionW' in selected_model['weights']:
+            parity['directions'] = (directions[0] * selected_actor.temperature).tolist()
+        if 'orderW' in selected_model['weights']:
+            parity['orders'] = (orders[0] * selected_actor.temperature).tolist()
+        (args.output / 'parity.json').write_text(json.dumps(parity), encoding='utf-8')
+        (args.output / 'rl-training.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+        print(json.dumps({'model': str(selected_checkpoint), 'latestModel': str(checkpoint), 'selectedCheckpoint': report['selectedCheckpoint'],
+                          'before': report['beforeSummary'], 'warmStart': report['warmStartSummary'], 'after': report['afterSummary'], 'latest': report['latestSummary'],
+                          'actorWeightChangeL1': report['actorWeightChangeL1']}), flush=True)
+    finally:
+        engine.close()
+
+
+if __name__ == '__main__':
+    main()

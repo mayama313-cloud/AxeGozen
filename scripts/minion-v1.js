@@ -10,7 +10,7 @@ const { createMatch, TICK } = require('../game-world');
 const { preflight, parseJSON, readJSON } = require('./minion-input');
 const root = path.resolve(__dirname, '..');
 const arg = (name, fallback) => { const i = process.argv.indexOf('--' + name); return i < 0 ? fallback : process.argv[i + 1]; };
-const output = path.resolve(arg('output', path.join(root, 'datas/models/minion-v1')));
+const output = path.resolve(arg('output', path.join(root, process.argv[2] === 'rl' ? 'datas/models/minion-v1-rl' : 'datas/models/minion-v1')));
 const fingerprint = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 async function prepare() {
@@ -126,6 +126,8 @@ function smoke() {
   const actual = Policy.forward(model, probe.x);
   const error = Math.max(...actual.logits.map((n, i) => Math.abs(n - probe.logits[i])), ...actual.points.map((n, i) => Math.abs(n - probe.points[i])));
   if (error > 1e-4) throw Error('PythonとJavaScriptの推論が一致しません: ' + error);
+  if (probe.directions && Math.max(...actual.directions.map((n, i) => Math.abs(n - probe.directions[i]))) > 1e-4) throw Error('移動方向の推論が一致しません。');
+  if (probe.orders && Math.max(...actual.orders.map((n, i) => Math.abs(n - probe.orders[i]))) > 1e-4) throw Error('追跡操作の推論が一致しません。');
   report.pythonJavaScriptMaxError = error;
   fs.writeFileSync(path.join(output, 'smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
@@ -138,6 +140,16 @@ function smoke() {
     const result = spawnSync(arg('python', 'python'), [path.join(__dirname, 'train-minion.py'), '--output', output, '--epochs', arg('epochs', '30')], { stdio: 'inherit' });
     if (result.error || result.status !== 0) throw result.error || Error('学習処理に失敗しました。');
   }
-  if (command === 'train' || command === 'smoke') smoke();
-  if (!['check', 'prepare', 'train', 'smoke'].includes(command)) throw Error('command: check | prepare | train | smoke');
+  if (command === 'rl') {
+    const initial = path.resolve(arg('model', path.join(root, 'datas/models/minion-v1/model.json')));
+    Policy.validate(readJSON(initial));
+    const args = [path.join(__dirname, 'reinforce-minion.py'), '--model', initial, '--output', output, '--node', process.execPath];
+    const reference = arg('reference-model', null);
+    if (reference) { const full = path.resolve(reference); Policy.validate(readJSON(full)); args.push('--reference-model', full); }
+    for (const [name, fallback] of Object.entries({ updates: '100', steps: '128', envs: '4', 'max-seconds': '120', 'retreat-fraction': '0.5', 'eval-episodes': '12', 'eval-seconds': '60', 'eval-every': '25', seed: '17' })) args.push('--' + name, arg(name, fallback));
+    const result = spawnSync(arg('python', 'python'), args, { stdio: 'inherit' });
+    if (result.error || result.status !== 0) throw result.error || Error('強化学習に失敗しました。');
+  }
+  if (command === 'train' || command === 'smoke' || command === 'rl') smoke();
+  if (!['check', 'prepare', 'train', 'smoke', 'rl'].includes(command)) throw Error('command: check | prepare | train | smoke | rl');
 })().catch(error => { console.error(error.stack); process.exitCode = 1; });

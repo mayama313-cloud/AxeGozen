@@ -2,9 +2,11 @@
   'use strict';
   const VERSION = 'minion-hash-mlp/1', SIZE = 1024;
   const EVENTS = ['noop', 'steer', 'move', 'chase', 'q', 'dash', 'c', 'leap', 'cancelLeap', 'recall'];
+  const DIRECTIONS = [[0, 0], [1, 0], [Math.SQRT1_2, Math.SQRT1_2], [0, 1], [-Math.SQRT1_2, Math.SQRT1_2], [-1, 0], [-Math.SQRT1_2, -Math.SQRT1_2], [0, -1], [Math.SQRT1_2, -Math.SQRT1_2]];
+  const TACTICAL_VERSION = 'minion-tactical/2';
   const hash = text => { let h = 2166136261; for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619); return h >>> 0; };
   const clip = (n, limit = 1) => Math.max(-limit, Math.min(limit, n));
-  function features(state, actor, init, memory = {}) {
+  function features(state, actor, init, memory = {}, version = null) {
     const me = state.players.find(p => p.id === actor);
     if (!me) throw Error('モデルの視点がありません。');
     const sign = me.slot === 1 ? -1 : 1, vector = new Float32Array(SIZE);
@@ -43,6 +45,28 @@
     walk(scene, 'state', ''); walk(map, 'map', ''); walk(init.cfg, 'cfg', ''); walk(init.characters, 'characters', '');
     walk(memory, 'history', '');
     for (let i = 0; i < SIZE; i++) vector[i] = clip(vector[i], 8);
+    if (version === TACTICAL_VERSION) {
+      const cfg = { ...init.cfg, ...(init.characters.find(c => c.id === me.character)?.stats || {}) };
+      const enemy = state.players.find(p => p.id !== actor && p.vis && !p.dead);
+      const home = init.map.spawns[me.slot], homeD = Math.hypot(home.x - me.x, home.z - me.z);
+      const enemyD = enemy ? Math.hypot(enemy.x - me.x, enemy.z - me.z) : 60;
+      const enemyHp = enemy ? enemy.hp / enemy.maxHp : 0;
+      const enemyZone = state.control.find(c => c.slot !== me.slot);
+      const invaded = enemyZone && (me.slot === 1 ? me.x - me.z : me.z - me.x) < enemyZone.boundary;
+      const towers = state.towers.filter(t => t.slot !== me.slot && !t.dead);
+      const towerD = towers.length ? Math.min(...towers.map(t => Math.hypot(t.x - me.x, t.z - me.z))) : 60;
+      const x = me.inputs?.keys?.x || 0, z = me.inputs?.keys?.z || 0;
+      const tactical = [me.hp / me.maxHp, enemyHp, me.hp / me.maxHp - enemyHp, enemy ? 1 : 0,
+        clip(enemyD / 30), clip(homeD / 60), (home.x - me.x) * sign / 60, (home.z - me.z) * sign / 60,
+        enemy ? (enemy.x - me.x) * sign / 60 : 0, enemy ? (enemy.z - me.z) * sign / 60 : 0,
+        invaded ? 1 : 0, me.safe ? 1 : 0, clip(towerD / 30), me.inputs?.target ? 1 : 0,
+        x * sign, z * sign, me.qCd / cfg.qCd, me.eCd / cfg.eCd, me.cCd / cfg.cCd,
+        clip(me.recall / cfg.recallTime), clip(me.stun), me.dead ? 1 : 0, me.aiming ? 1 : 0,
+        enemyD <= cfg.atkRange ? 1 : 0, enemyD <= cfg.qRange ? 1 : 0, me.shield > 0 ? 1 : 0,
+        me.speedBoost > 0 ? 1 : 0, Math.sin(me.face) * sign, Math.cos(me.face) * sign,
+        clip(me.energy / 100), clip((me.x - me.z) * sign / 60), homeD > 0 ? (x * (home.x - me.x) + z * (home.z - me.z)) / homeD : 0];
+      tactical.forEach((v, i) => { vector[SIZE - 32 + i] = Number.isFinite(v) ? clip(v) : 0; });
+    }
     return vector;
   }
   function updateMemory(memory, state, actor, events = []) {
@@ -73,45 +97,97 @@
   function validate(model) {
     if (model?.format !== VERSION || model.inputSize !== SIZE || JSON.stringify(model.events) !== JSON.stringify(EVENTS) || !Array.isArray(model.characters) || !model.characters.length || model.characters.some(id => !['alex', 'mira', 'bastion', 'lucia', 'darius'].includes(id))) throw Error('対応していないミニオンモデルです。');
     const h = model.hiddenSize, w = model.weights;
+    if (model.featureVersion && model.featureVersion !== TACTICAL_VERSION) throw Error('対応していない観測形式です。');
+    if (model.movementOrder && !['stop-clears-chase/1', 'learned-chase-order/1'].includes(model.movementOrder)) throw Error('対応していない移動操作形式です。');
+    if (model.controlProtocol && model.controlProtocol !== 'release-before-chase/1') throw Error('対応していない攻撃操作形式です。');
     if (!Number.isInteger(h) || h < 1 || h > 256 || !model.init?.map?.spawns || !w) throw Error('モデルの設定が不正です。');
     for (const [name, rows, columns] of [['hiddenW', h, SIZE], ['typeW', EVENTS.length, h], ['pointW', EVENTS.length * 2, h]]) {
       if (!Array.isArray(w[name]) || w[name].length !== rows || w[name].some(row => !Array.isArray(row) || row.length !== columns || row.some(n => !Number.isFinite(n)))) throw Error('モデルの重みが不正です。');
     }
     for (const [name, length] of [['hiddenB', h], ['typeB', EVENTS.length], ['pointB', EVENTS.length * 2]]) if (!Array.isArray(w[name]) || w[name].length !== length || w[name].some(n => !Number.isFinite(n))) throw Error('モデルのバイアスが不正です。');
+    if (w.directionW || w.directionB) {
+      if (!Array.isArray(w.directionW) || w.directionW.length !== 9 || w.directionW.some(row => !Array.isArray(row) || row.length !== h || row.some(n => !Number.isFinite(n)))
+        || !Array.isArray(w.directionB) || w.directionB.length !== 9 || w.directionB.some(n => !Number.isFinite(n))) throw Error('移動方向の重みが不正です。');
+    }
+    if (w.orderW || w.orderB) {
+      if (!Array.isArray(w.orderW) || w.orderW.length !== 2 || w.orderW.some(row => !Array.isArray(row) || row.length !== h || row.some(n => !Number.isFinite(n)))
+        || !Array.isArray(w.orderB) || w.orderB.length !== 2 || w.orderB.some(n => !Number.isFinite(n))) throw Error('追跡操作の重みが不正です。');
+    }
     return model;
   }
   function forward(model, x) {
     const dense = (w, b, v) => w.map((row, i) => row.reduce((sum, n, j) => sum + n * v[j], b[i]));
     const w = model.weights, hidden = dense(w.hiddenW, w.hiddenB, x).map(Math.tanh);
-    return { logits: dense(w.typeW, w.typeB, hidden), points: dense(w.pointW, w.pointB, hidden).map(Math.tanh) };
+    const points = dense(w.pointW, w.pointB, hidden).map(Math.tanh);
+    const directions = w.directionW ? dense(w.directionW, w.directionB, hidden).map((n, i) => n + 1.5 * (DIRECTIONS[i][0] * points[2] + DIRECTIONS[i][1] * points[3])) : null;
+    const orders = w.orderW ? dense(w.orderW, w.orderB, hidden) : null;
+    return { logits: dense(w.typeW, w.typeB, hidden), points, directions, orders };
   }
-  function decide(model, observation, actor, memory = {}, draw = null) {
+  function actionMask(model, observation, actor, explore = false) {
     const me = observation.players.find(p => p.id === actor);
-    if (!me || !model.characters.includes(me.character)) return { event: 'noop', data: null };
-    const result = forward(model, features(observation, actor, model.init, memory));
+    if (!me) return EVENTS.map((_, i) => i === 0);
     const locked = observation.phase !== 'playing' || me.dead || me.stun > 0 || me.air > 0 || me.warping > 0 || me.charging || me.grabbing || me.grabbed || me.flying;
     const candidates = targets(observation, me, model.init);
     const allowed = [true, !locked, !locked, !locked && candidates.length > 0, !locked && me.qCd <= 0,
       !locked && me.eCd <= 0, !locked && me.cCd <= 0, !locked && me.character === 'alex' && me.aiming && me.eCd <= 0, true, !locked];
-    for (let i = 1; i < EVENTS.length; i++) if (model.training?.classCounts?.[EVENTS[i]] === 0) allowed[i] = false;
-    let type = 0;
-    for (let i = 1; i < EVENTS.length; i++) if (allowed[i] && result.logits[i] > result.logits[type]) type = i;
-    if (draw !== null) {
-      const maximum = result.logits[type];
-      const probabilities = result.logits.map((n, i) => allowed[i] ? Math.exp((n - maximum) / 0.7) : 0);
-      let remaining = draw * probabilities.reduce((a, b) => a + b, 0);
-      for (let i = 0; i < probabilities.length; i++) { remaining -= probabilities[i]; if (remaining <= 0) { type = i; break; } }
-    }
-    const event = EVENTS[type], sign = me.slot === 1 ? -1 : 1;
-    let x = result.points[type * 2], z = result.points[type * 2 + 1];
+    for (let i = 1; i < EVENTS.length; i++) if (!explore && !model.reinforcementLearning && model.training?.classCounts?.[EVENTS[i]] === 0) allowed[i] = false;
+    return allowed;
+  }
+  function decode(model, observation, actor, type, point) {
+    const me = observation.players.find(p => p.id === actor), event = EVENTS[type], sign = me.slot === 1 ? -1 : 1;
+    let [x, z] = point;
     if (event === 'noop' || event === 'cancelLeap' || event === 'recall') return { event, data: null };
     if (event === 'steer') return { event, data: { x: clip(x * sign), z: clip(z * sign) } };
     x = me.x + x * 60 * sign; z = me.z + z * 60 * sign;
     if (event === 'chase') {
+      const candidates = targets(observation, me, model.init);
+      if (!candidates.length) return { event: 'noop', data: null };
       candidates.sort((a, b) => Math.hypot(a.x - x, a.z - z) - Math.hypot(b.x - x, b.z - z));
       return { event, data: { id: candidates[0].id } };
     }
     return { event, data: { x: clip(x, 29), z: clip(z, 29) } };
+  }
+  function decide(model, observation, actor, memory = {}, draw = null, directionDraw = null, orderDraw = null) {
+    const me = observation.players.find(p => p.id === actor);
+    if (!me || !model.characters.includes(me.character)) return { event: 'noop', data: null };
+    const result = forward(model, features(observation, actor, model.init, memory, model.featureVersion));
+    const allowed = actionMask(model, observation, actor);
+    let type = 0;
+    for (let i = 1; i < EVENTS.length; i++) if (allowed[i] && result.logits[i] > result.logits[type]) type = i;
+    if (draw !== null) {
+      const maximum = result.logits[type];
+      const probabilities = result.logits.map((n, i) => allowed[i] ? Math.exp((n - maximum) / (model.reinforcementLearning?.temperature || 0.7)) : 0);
+      let remaining = draw * probabilities.reduce((a, b) => a + b, 0);
+      for (let i = 0; i < probabilities.length; i++) { remaining -= probabilities[i]; if (remaining <= 0) { type = i; break; } }
+    }
+    let point = result.points.slice(type * 2, type * 2 + 2);
+    if (type === 1 && result.directions) {
+      let selected = result.directions.indexOf(Math.max(...result.directions));
+      if (directionDraw !== null) {
+        const maximum = result.directions[selected], probabilities = result.directions.map(n => Math.exp((n - maximum) / (model.reinforcementLearning?.temperature || 0.7)));
+        let remaining = directionDraw * probabilities.reduce((a, b) => a + b, 0);
+        for (let i = 0; i < probabilities.length; i++) { remaining -= probabilities[i]; if (remaining <= 0) { selected = i; break; } }
+      }
+      point = DIRECTIONS[selected];
+    }
+    const action = decode(model, observation, actor, type, point);
+    if (type === 1 && result.orders) {
+      const temperature = model.reinforcementLearning?.temperature || .7;
+      const probability = 1 / (1 + Math.exp((result.orders[0] - result.orders[1]) / temperature));
+      action.cancelChase = Math.hypot(...point) < .01 || (orderDraw === null ? probability >= .5 : orderDraw < probability);
+    }
+    return action;
+  }
+  function commands(model, state, actor, action) {
+    if (action.event === 'noop') return [];
+    if (action.event === 'chase' && model.controlProtocol === 'release-before-chase/1') return [{ event: 'steer', data: { x: 0, z: 0 } }, action];
+    if (action.event === 'steer' && model.featureVersion === TACTICAL_VERSION) {
+      if (model.weights.orderW && !action.cancelChase && Math.hypot(action.data.x, action.data.z) > 0.01) return [action];
+      if (model.movementOrder === 'stop-clears-chase/1' && Math.hypot(action.data.x, action.data.z) > 0.01) return [action];
+      const me = state.players.find(p => p.id === actor);
+      return [{ event: 'move', data: { x: me.x, z: me.z } }, action];
+    }
+    return [action];
   }
   function controller(model) {
     validate(model); const memory = {}; let lastTick = -1, cues = [], seed = 17;
@@ -125,14 +201,19 @@
     const act = state => {
       const actor = observeState(state);
       seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-      const action = decide(model, state, actor, memory, seed / 4294967296);
-      return action.event === 'noop' ? [] : [action];
+      const draw = seed / 4294967296;
+      let directionDraw = null;
+      if (model.weights.directionW) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; directionDraw = seed / 4294967296; }
+      let orderDraw = null;
+      if (model.weights.orderW) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; orderDraw = seed / 4294967296; }
+      const action = decide(model, state, actor, memory, draw, directionDraw, orderDraw);
+      return commands(model, state, actor, action);
     };
     act.observe = event => cues.push(event);
     act.observeState = observeState;
     act.reset = () => { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = 17; lastTick = -1; };
     return act;
   }
-  const api = { VERSION, SIZE, EVENTS, features, updateMemory, label, validate, forward, decide, controller };
+  const api = { VERSION, SIZE, EVENTS, DIRECTIONS, TACTICAL_VERSION, features, updateMemory, label, validate, forward, actionMask, decode, decide, commands, controller };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.MinionPolicy = api;
 })(globalThis);

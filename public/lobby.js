@@ -25,10 +25,11 @@
       const loaded = window.MinionPolicy.validate(JSON.parse(await file.text()));
       if (loaded.rulesVersion !== 'minion-v1-collection-1') throw Error('ゲームのルール版とモデルが一致しません。');
       model = loaded;
+      const modelLabel = loaded.modelName + (loaded.reinforcementLearning ? loaded.featureVersion ? '（強化学習 v2）' : '（強化学習）' : '');
       el('cpuController').options[1].disabled = false;
-      el('cpuController').options[1].textContent = loaded.modelName;
+      el('cpuController').options[1].textContent = modelLabel;
       el('cpuController').value = 'model';
-      el('minionModelStatus').textContent = `${loaded.modelName} を読み込みました。対応キャラ：${loaded.characters.map(id => ArenaWorld.characterFor(id)?.name || id).join('、')}。CPU対戦で使用できます。`;
+      el('minionModelStatus').textContent = `${modelLabel} を読み込みました。対応キャラ：${loaded.characters.map(id => ArenaWorld.characterFor(id)?.name || id).join('、')}。CPU対戦で使用できます。`;
     } catch (error) { el('minionModelStatus').textContent = error.message; }
   });
   el('startMatch').addEventListener('click', () => {

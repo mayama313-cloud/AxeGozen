@@ -155,16 +155,34 @@ def summarize(evaluation):
             'lowHpStepsTowardHome': sum(e.get('lowHpStepsTowardHome', 0) for e in episodes),
             'lowHpStepsAwayFromHome': sum(e.get('lowHpStepsAwayFromHome', 0) for e in episodes),
             'normalMatchEnergy': sum(e.get('energy', 0) for e in matches) / max(1, len(matches)),
+            'attackAttempts': sum(e.get('attackAttempts', 0) for e in episodes),
+            'emptyAttacks': sum(e.get('emptyAttacks', 0) for e in episodes),
+            'rejectedAttacks': sum(e.get('rejectedAttacks', 0) for e in episodes),
             'meanEnergy': sum(e.get('energy', 0) for e in episodes) / max(1, len(episodes))}
 
 
-def selection_score(stats):
-    return (stats['retreatRecoveries'] / max(1, stats['retreatAttempts']), stats['wins'] - stats['losses'],
+def selection_score(stats, baseline=None):
+    farm = min(2., stats.get('normalMatchEnergy', 0) / max(1., (baseline or stats).get('normalMatchEnergy', 0)))
+    waste = (stats.get('emptyAttacks', 0) + stats.get('rejectedAttacks', 0)) / max(1, stats.get('attackAttempts', 0))
+    return (stats['wins'] - stats['losses'], stats['retreatRecoveries'] / max(1, stats['retreatAttempts']) + .5 * farm - .1 * waste,
             -stats['deaths'] / max(1, stats['episodes']), stats['meanReturn'])
 
 
 def eligible_for_selection(stats, baseline):
-    return stats['normalMatchEnergy'] >= baseline['normalMatchEnergy'] * .5 or stats['wins'] > baseline['wins']
+    recovery = stats.get('retreatRecoveries', 0) / max(1, stats.get('retreatAttempts', 0))
+    baseline_recovery = baseline.get('retreatRecoveries', 0) / max(1, baseline.get('retreatAttempts', 0))
+    return (stats['normalMatchEnergy'] >= baseline['normalMatchEnergy'] * .85 and recovery >= baseline_recovery - .125) or stats['wins'] > baseline['wins']
+
+
+def upgrade_features(model):
+    previous = model.get('featureVersion')
+    if previous == 'minion-tactical/3':
+        return
+    for row in model['weights']['hiddenW']:
+        row[-48:-32] = [0.] * 16
+        if previous != 'minion-tactical/2':
+            row[-32:] = [0.] * 32
+    model['featureVersion'] = 'minion-tactical/3'
 
 
 def main():
@@ -177,13 +195,14 @@ def main():
     parser.add_argument('--steps', type=int, default=128)
     parser.add_argument('--envs', type=int, default=4)
     parser.add_argument('--max-seconds', type=float, default=120)
-    parser.add_argument('--retreat-fraction', type=float, default=0.5)
+    parser.add_argument('--retreat-fraction', type=float, default=0.35)
+    parser.add_argument('--farm-fraction', type=float, default=0.25)
     parser.add_argument('--eval-episodes', type=int, default=12)
     parser.add_argument('--eval-seconds', type=float, default=60)
     parser.add_argument('--eval-every', type=int, default=25)
     parser.add_argument('--seed', type=int, default=17)
     args = parser.parse_args()
-    if not (1 <= args.updates <= 100000 and 8 <= args.steps <= 2048 and 1 <= args.envs <= 32 and 1 <= args.max_seconds <= 1200 and 0 <= args.retreat_fraction <= 1 and 2 <= args.eval_episodes <= 100 and 1 <= args.eval_seconds <= 1200 and args.eval_every >= 1):
+    if not (1 <= args.updates <= 100000 and 8 <= args.steps <= 2048 and 1 <= args.envs <= 32 and 1 <= args.max_seconds <= 1200 and 0 <= args.retreat_fraction <= 1 and 0 <= args.farm_fraction <= 1 - args.retreat_fraction and 2 <= args.eval_episodes <= 100 and 1 <= args.eval_seconds <= 1200 and args.eval_every >= 1):
         raise ValueError('Invalid RL training parameters')
     args.output.mkdir(parents=True, exist_ok=True)
     if args.model.parent.resolve() == args.output.resolve():
@@ -199,13 +218,11 @@ def main():
     # Keep existing models unchanged. New RL models reserve explicit tactical inputs
     # and get a categorical steering head that can explore the opposite direction.
     base = copy.deepcopy(base)
-    if base.get('featureVersion') != 'minion-tactical/2':
-        base['featureVersion'] = 'minion-tactical/2'
-        for row in base['weights']['hiddenW']:
-            row[-32:] = [0.] * 32
+    upgrade_features(base)
     base.setdefault('reinforcementLearning', {})['temperature'] = 1.
     base['movementOrder'] = 'learned-chase-order/1'
     base['controlProtocol'] = 'release-before-chase/1'
+    base['aimProtocol'] = 'release-invalid-leap/1'
     warm_start = args.output / 'warm-start-model.json'
     actor = ActorCritic(base)
     initial_actor_state = {key: value.clone() for key, value in actor.state_dict().items()}
@@ -213,10 +230,7 @@ def main():
     reference_model = json.loads(reference_bytes.decode('utf-8-sig'))
     if not set(base['characters']).issubset(reference_model['characters']):
         raise ValueError('Reference model must support every training character')
-    if reference_model.get('featureVersion') != 'minion-tactical/2':
-        reference_model['featureVersion'] = 'minion-tactical/2'
-        for row in reference_model['weights']['hiddenW']:
-            row[-32:] = [0.] * 32
+    upgrade_features(reference_model)
     reference_model.setdefault('reinforcementLearning', {})['temperature'] = actor.temperature
     reference = ActorCritic(reference_model).eval()
     if reference.hidden.weight.shape != actor.hidden.weight.shape:
@@ -232,7 +246,7 @@ def main():
     report = {'algorithm': 'PPO', 'initialModel': str(args.model), 'initialSnapshot': str(initial_snapshot), 'initialSha256': hashlib.sha256(base_bytes).hexdigest(),
               'seed': args.seed, 'gamma': gamma, 'gaeLambda': lam, 'clip': .2, 'updates': args.updates,
               'referenceModel': str(args.reference_model or args.model), 'referenceSha256': hashlib.sha256(reference_bytes).hexdigest(),
-              'envs': args.envs, 'stepsPerUpdate': args.steps, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction,
+              'envs': args.envs, 'stepsPerUpdate': args.steps, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction, 'farmFraction': args.farm_fraction,
               'temperature': actor.temperature, 'evaluationProtocol': 'balanced-tactics/3', 'referenceKlWeight': .02, 'healthyReferenceKlExtra': .2, 'learningRate': .0001,
               'evalEvery': args.eval_every, 'selectionHistory': [], 'history': [], 'episodes': [],
               'limitations': ['short runs do not establish improvement', 'the reference algorithm opponent is not a human',
@@ -264,7 +278,7 @@ def main():
         stats = summarize(measured)
         if validation_baseline is None:
             validation_baseline = stats
-        score = selection_score(stats)
+        score = selection_score(stats, validation_baseline)
         eligible = eligible_for_selection(stats, validation_baseline)
         accepted = eligible and (selected_score is None or score > selected_score)
         report['selectionHistory'].append({'tag': tag, 'summary': stats, 'score': list(score), 'eligible': eligible, 'accepted': accepted})
@@ -286,7 +300,7 @@ def main():
         warm['weights']['orderB'] = actor.order.bias.detach().tolist()
         warm_start.write_text(json.dumps(warm, ensure_ascii=False), encoding='utf-8')
         initialized = engine.call({'op': 'init', 'model': str(warm_start.resolve()), 'envs': args.envs,
-                                   'options': {'gamma': gamma, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction, 'seed': args.seed}})
+                                   'options': {'gamma': gamma, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction, 'farmFraction': args.farm_fraction, 'seed': args.seed}})
         report['rewardConfig'] = initialized['rewards']
         report['potentialConfig'] = initialized['shaping']
         evaluation_options = {'episodes': args.eval_episodes, 'maxSeconds': args.eval_seconds, 'seed': args.seed + 100000, 'gamma': gamma, 'characters': base['characters']}
@@ -295,8 +309,8 @@ def main():
         print(json.dumps({'before': summarize(report['before'])}), flush=True)
         report['warmStart'] = engine.call({'op': 'evaluate', 'model': str(warm_start.resolve()), 'options': evaluation_options})
         print(json.dumps({'warmStart': summarize(report['warmStart'])}), flush=True)
-        consider(reference_snapshot, 'imitation-reference')
         consider(initial_snapshot, 'initial')
+        consider(reference_snapshot, 'imitation-reference')
         consider(warm_start, 'warm-start')
         observations = initialized['observations']
         for update in range(args.updates):

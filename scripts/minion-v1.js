@@ -146,7 +146,7 @@ function smoke() {
     const args = [path.join(__dirname, 'reinforce-minion.py'), '--model', initial, '--output', output, '--node', process.execPath];
     const reference = arg('reference-model', null);
     if (reference) { const full = path.resolve(reference); Policy.validate(readJSON(full)); args.push('--reference-model', full); }
-    for (const [name, fallback] of Object.entries({ updates: '100', steps: '128', envs: '4', 'max-seconds': '120', 'retreat-fraction': '0.5', 'eval-episodes': '12', 'eval-seconds': '60', 'eval-every': '25', seed: '17' })) args.push('--' + name, arg(name, fallback));
+    for (const [name, fallback] of Object.entries({ updates: '100', steps: '128', envs: '4', 'max-seconds': '120', 'retreat-fraction': '0.35', 'farm-fraction': '0.25', 'eval-episodes': '12', 'eval-seconds': '60', 'eval-every': '25', seed: '17' })) args.push('--' + name, arg(name, fallback));
     const result = spawnSync(arg('python', 'python'), args, { stdio: 'inherit' });
     if (result.error || result.status !== 0) throw result.error || Error('強化学習に失敗しました。');
   }

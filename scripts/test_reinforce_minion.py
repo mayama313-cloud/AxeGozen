@@ -64,7 +64,21 @@ class SteeringTests(unittest.TestCase):
     def test_selection_rejects_a_policy_that_stops_normal_farming(self):
         baseline = {'normalMatchEnergy': 8, 'wins': 0}
         self.assertFalse(module.eligible_for_selection({'normalMatchEnergy': 0, 'wins': 0}, baseline))
-        self.assertTrue(module.eligible_for_selection({'normalMatchEnergy': 4, 'wins': 0}, baseline))
+        self.assertFalse(module.eligible_for_selection({'normalMatchEnergy': 4, 'wins': 0}, baseline))
+        self.assertTrue(module.eligible_for_selection({'normalMatchEnergy': 7, 'wins': 0}, baseline))
+
+    def test_farming_improvement_cannot_erase_learned_retreat(self):
+        baseline = {'normalMatchEnergy': 8, 'wins': 0, 'retreatRecoveries': 7, 'retreatAttempts': 8}
+        self.assertFalse(module.eligible_for_selection({**baseline, 'normalMatchEnergy': 16, 'retreatRecoveries': 0}, baseline))
+
+    def test_feature_upgrade_preserves_existing_tactical_weights(self):
+        model = {'featureVersion': 'minion-tactical/2', 'weights': {'hiddenW': [[1.] * 1024]}}
+        module.upgrade_features(model)
+        self.assertEqual(model['weights']['hiddenW'][0][-32:], [1.] * 32)
+        self.assertEqual(model['weights']['hiddenW'][0][-48:-32], [0.] * 16)
+        model['weights']['hiddenW'][0][-40] = .5
+        module.upgrade_features(model)
+        self.assertEqual(model['weights']['hiddenW'][0][-40], .5)
 
 
 if __name__ == '__main__':

@@ -4,8 +4,9 @@ const Policy = require('../public/minion-policy');
 const { readJSON } = require('./minion-input');
 
 const REWARDS = Object.freeze({ win: 20, loss: -20, tower: 3, kill: 1.5, death: -2.5,
-  heroDamage: 0.002, towerDamage: 0.004, damageReceived: -0.002, zoneDamage: -0.004, energy: 0.015, time: -0.0005, retreatTask: 3 });
-const SHAPING = Object.freeze({ base: 0.8, health: 1.5, danger: 0.8 });
+  heroDamage: 0.002, towerDamage: 0.004, damageReceived: -0.002, zoneDamage: -0.004, energy: 0.08,
+  emptyAttack: -0.06, rejectedAttack: -0.02, time: -0.0005, retreatTask: 3 });
+const SHAPING = Object.freeze({ base: 0.8, health: 1.5, danger: 0.8, farmDistance: 0.25, farmDamage: 0.2 });
 const runtimeInit = model => ({ ...model.init, cfg: World.CFG, map: World.MAP, characters: World.CHARACTERS });
 
 function potential(state, actor) {
@@ -18,13 +19,29 @@ function potential(state, actor) {
     .filter(e => e.slot !== me.slot && !e.dead && Number.isFinite(e.x));
   const near = enemies.reduce((risk, e) => Math.max(risk, Math.max(0, 1 - Math.hypot(me.x - e.x, me.z - e.z) / 10)), 0);
   const danger = Math.min(1, (inEnemy ? 0.7 : 0) + near);
-  return SHAPING.base + SHAPING.health * ratio - SHAPING.danger * (1 - ratio) ** 2 * danger;
+  const own = state.control.find(c => c.slot === me.slot);
+  const farm = (state.monsters || []).filter(m => !m.large && !m.dead
+    && own && (me.slot === 1 ? m.z - m.x : m.x - m.z) < own.boundary)
+    .reduce((best, m) => Math.max(best, SHAPING.farmDistance * Math.max(0, 1 - Math.hypot(m.x - me.x, m.z - me.z) / 40)
+      + SHAPING.farmDamage * (1 - m.hp / m.maxHp)), 0);
+  // Potential differences reward progress, without paying repeatedly for damage/healing cycles.
+  return SHAPING.base + SHAPING.health * ratio - SHAPING.danger * (1 - ratio) ** 2 * danger + ratio ** 2 * farm;
+}
+
+function emptyAttack(state, actor, cfg, memory = {}) {
+  const me = state.players.find(p => p.id === actor);
+  // Blind casts at a recently seen enemy remain valid training choices.
+  const seen = memory.lastSeen?.opponent;
+  const candidates = [...state.players.filter(p => p.id !== actor && p.vis), ...state.robots, ...state.towers, ...(state.monsters || [])];
+  if (seen && state.time - seen.seenAt <= 2) candidates.push(seen);
+  return !candidates.some(e => e.slot !== me.slot && !e.dead && Number.isFinite(e.x)
+    && Math.hypot(e.x - me.x, e.z - me.z) <= cfg.qRange + (e.radius || 1) + .5);
 }
 
 class Environment {
   constructor(model, options = {}) {
     this.model = { ...model, init: runtimeInit(model), reinforcementLearning: { algorithm: 'PPO' } };
-    this.options = { gamma: 0.995, maxSeconds: 120, retreatFraction: 0.5, seed: 17, ...options };
+    this.options = { gamma: 0.995, maxSeconds: 120, retreatFraction: 0.35, farmFraction: 0.25, seed: 17, ...options };
     this.seed = this.options.seed >>> 0; this.episode = 0;
   }
   random() { this.seed = (Math.imul(this.seed, 1664525) + 1013904223) >>> 0; return this.seed / 4294967296; }
@@ -32,12 +49,13 @@ class Environment {
     this.episode++; this.memory = {}; this.cues = []; this.combat = []; this.return = 0; this.elapsed = 0;
     this.scenario = forcedScenario || (this.random() < this.options.retreatFraction ? 'retreat' : 'match');
     if (!forcedScenario && this.scenario === 'retreat' && this.random() < 0.25) this.scenario = 'retreat-hard';
+    if (!forcedScenario && this.scenario === 'match' && this.random() < this.options.farmFraction / Math.max(.000001, 1 - this.options.retreatFraction)) this.scenario = 'farm';
     const character = forcedCharacter || this.model.characters[Math.floor(this.random() * this.model.characters.length)];
     this.character = character;
     this.opponentCharacter = World.CHARACTERS[Math.floor(this.random() * World.CHARACTERS.length)].id;
     this.metrics = { scenario: this.scenario, character, opponent: this.opponentCharacter, deaths: 0, kills: 0,
       damageDealt: 0, damageReceived: 0, zoneDamage: 0, towersDestroyed: 0, towersLost: 0, recovery: false, lowHp: false, commands: 0,
-      lowHpChaseCommands: 0, lowHpStepsTowardHome: 0, lowHpStepsAwayFromHome: 0 };
+      lowHpChaseCommands: 0, lowHpStepsTowardHome: 0, lowHpStepsAwayFromHome: 0, attackAttempts: 0, emptyAttacks: 0, rejectedAttacks: 0 };
     const hooks = {};
     const idle = () => [];
     idle.observe = event => this.cues.push(event);
@@ -50,11 +68,18 @@ class Environment {
       Object.assign(p, { x: -3 - this.random() * 2, z: 1 + this.random() * 2, hp: p.cfg.maxHp * (0.2 + this.random() * 0.2) });
       const distance = this.scenario === 'retreat-hard' ? 2 : 4;
       Object.assign(enemy, { x: p.x - distance - this.random(), z: p.z + 2 + this.random(), hp: enemy.cfg.maxHp * (0.6 + this.random() * 0.4) });
+    } else if (this.scenario === 'farm') {
+      // Only the training reset changes. The policy still uses ordinary player inputs.
+      while (this.game.observe('cpu-player').time < 5.2) this.game.tick();
+      const camp = this.game.state.camps.filter(c => !c.large && c.x > 0)[Math.floor(this.random() * 3)];
+      Object.assign(p, { x: camp.x - 3 - this.random() * 2, z: camp.z - 3, hp: p.cfg.maxHp });
+      this.combat = []; this.memory = {}; this.cues = [];
     } else {
       p.x += (this.random() - 0.5) * 2; p.z += (this.random() - 0.5) * 2;
       enemy.x += (this.random() - 0.5) * 2; enemy.z += (this.random() - 0.5) * 2;
     }
     this.state = this.game.observe('cpu-player');
+    this.startedAt = this.state.time;
     this.previousEnergy = p.energy; this.previousPotential = potential(this.state, p.id);
     this.metrics.lowHp = p.hp / p.cfg.maxHp <= 0.4;
     return this.observation();
@@ -79,10 +104,18 @@ class Environment {
     const low = !before.dead && before.hp / before.maxHp <= 0.4;
     const beforeDistance = Math.hypot(before.x - home.x, before.z - home.z);
     if (low && command.event === 'chase') this.metrics.lowHpChaseCommands++;
+    const attack = command.event === 'q' || command.event === 'leap';
+    const noTarget = command.event === 'q' && emptyAttack(this.state, 'cpu-player', this.game.state.players['cpu-player'].cfg, this.memory);
+    if (attack) this.metrics.attackAttempts++;
     for (const input of Policy.commands(this.model, this.state, 'cpu-player', command)) { this.game.input('cpu-player', input.event, input.data); this.metrics.commands++; }
+    const current = this.game.state.players['cpu-player'];
+    const accepted = command.event === 'q' ? current.qCd > 0 : command.event === 'leap' ? current.eCd > 0 : false;
+    let attackReward = 0;
+    if (attack && !accepted) { this.metrics.rejectedAttacks++; attackReward = REWARDS.rejectedAttack; }
+    else if (noTarget) { this.metrics.emptyAttacks++; attackReward = REWARDS.emptyAttack; }
     for (let i = 0; i < 3 && this.game.observe('cpu-player').phase === 'playing'; i++) this.game.tick();
-    this.state = this.game.observe('cpu-player'); this.elapsed = this.state.time;
-    let reward = REWARDS.time;
+    this.state = this.game.observe('cpu-player'); this.elapsed = this.state.time - this.startedAt;
+    let reward = REWARDS.time + attackReward;
     for (const event of this.combat) {
       if (event.kind === 'damage') {
         if (event.slot === 1 && event.targetKind === 'player') { this.metrics.damageDealt += event.amount; reward += event.amount * REWARDS.heroDamage; }
@@ -186,4 +219,4 @@ async function serve() {
 }
 
 if (require.main === module) serve().catch(error => { console.error(error); process.exitCode = 1; });
-module.exports = { Environment, potential, REWARDS, SHAPING, runtimeInit, evaluate };
+module.exports = { Environment, potential, emptyAttack, REWARDS, SHAPING, runtimeInit, evaluate };

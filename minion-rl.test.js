@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const World = require('./game-world');
 const Policy = require('./public/minion-policy');
-const { Environment, potential, evaluate, REWARDS } = require('./scripts/minion-rl-env');
+const { Environment, potential, emptyAttack, evaluate, REWARDS } = require('./scripts/minion-rl-env');
 
 function model() {
   return { format: Policy.VERSION, inputSize: Policy.SIZE, hiddenSize: 1, characters: ['alex'], events: Policy.EVENTS,
@@ -164,4 +164,71 @@ test('each character is evaluated on normal, retreat and hard-retreat starts', (
   for (const character of m.characters) for (const scenario of ['match', 'retreat', 'retreat-hard']) {
     assert.equal(result.episodes.filter(e => e.character === character && e.scenario === scenario).length, 2);
   }
+});
+
+test('empty Q casts cost reward without forbidding player actions or utility skills', () => {
+  const env = new Environment(model(), { seed: 3 }); env.reset('match');
+  const p = env.game.state.players['cpu-player'];
+  assert.equal(emptyAttack(env.state, p.id, p.cfg), true);
+  const result = env.step({ type: 4, latent: [0, 0] }, false);
+  assert.ok(p.qCd > 0);
+  assert.equal(env.metrics.emptyAttacks, 1);
+  assert.equal(env.metrics.attackAttempts, 1);
+  assert.ok(result.reward < REWARDS.emptyAttack);
+  env.step({ type: 6, latent: [0, 0] }, false);
+  assert.equal(env.metrics.emptyAttacks, 1); // Alex's summon is useful without a nearby enemy.
+});
+
+test('visible targets and recent bush sightings do not count as certainly empty casts', () => {
+  const env = new Environment(model()); env.reset('match');
+  const p = env.game.state.players['cpu-player'];
+  const state = structuredClone(env.state);
+  state.monsters = [{ id: 'm', slot: 2, x: p.x + 2, z: p.z, hp: 100, maxHp: 100 }];
+  assert.equal(emptyAttack(state, p.id, p.cfg), false);
+  state.monsters = [];
+  const memory = { lastSeen: { opponent: { x: p.x, z: p.z + 2, seenAt: state.time } } };
+  assert.equal(emptyAttack(state, p.id, p.cfg, memory), false);
+  memory.lastSeen.opponent.seenAt -= 3;
+  assert.equal(emptyAttack(state, p.id, p.cfg, memory), true);
+});
+
+test('farm curriculum exposes real camps and counts episode time from its reset', () => {
+  const m = model(); m.featureVersion = Policy.FARM_VERSION; Policy.validate(m);
+  const env = new Environment(m, { maxSeconds: .2, seed: 5 }); env.reset('farm');
+  assert.ok(env.state.monsters.some(m => m.x > 0));
+  assert.ok(env.startedAt >= 5);
+  const first = env.step({ type: 0, latent: [0, 0] }, false);
+  assert.equal(first.truncated, false);
+  const result = env.step({ type: 0, latent: [0, 0] }, false);
+  assert.equal(result.truncated, true);
+  assert.ok(Math.abs(result.episode.seconds - .2) < .01);
+});
+
+test('farm observations preserve tactical slots and encode only observed own camps', () => {
+  const env = new Environment(model(), { seed: 5 }); env.reset('farm');
+  const state = env.state, actor = 'cpu-player';
+  const before = Policy.features(state, actor, env.model.init, {}, Policy.TACTICAL_VERSION);
+  const farm = Policy.features(state, actor, env.model.init, {}, Policy.FARM_VERSION);
+  assert.deepEqual(Array.from(farm.slice(-32)), Array.from(before.slice(-32)));
+  assert.equal(farm[Policy.SIZE - 48], 1);
+  const hidden = structuredClone(state); hidden.monsters = [];
+  assert.equal(Policy.features(hidden, actor, env.model.init, {}, Policy.FARM_VERSION)[Policy.SIZE - 48], 0);
+  assert.ok(farm.every(Number.isFinite));
+});
+
+test('invalid leap release cancels aiming like the player UI and preserves valid casts', () => {
+  const m = model(); m.aimProtocol = 'release-invalid-leap/1'; Policy.validate(m);
+  const env = new Environment(m); env.reset('match');
+  const p = env.game.state.players['cpu-player']; p.aiming = true;
+  env.state = env.game.observe(p.id);
+  const invalid = { event: 'leap', data: { x: -20, z: 20 } };
+  const inputs = Policy.commands(m, env.state, p.id, invalid);
+  assert.equal(inputs[0].event, 'cancelLeap');
+  for (const input of inputs) env.game.input(p.id, input.event, input.data);
+  assert.equal(p.aiming, false); assert.equal(p.eCd, 0);
+  p.aiming = true; env.state = env.game.observe(p.id);
+  const valid = { event: 'leap', data: { x: p.x - 1, z: p.z } };
+  assert.deepEqual(Policy.commands(m, env.state, p.id, valid), [valid]);
+  env.game.input(p.id, 'leap', valid.data);
+  assert.ok(p.eCd > 0);
 });

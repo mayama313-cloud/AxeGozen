@@ -4,6 +4,7 @@
   const EVENTS = ['noop', 'steer', 'move', 'chase', 'q', 'dash', 'c', 'leap', 'cancelLeap', 'recall'];
   const DIRECTIONS = [[0, 0], [1, 0], [Math.SQRT1_2, Math.SQRT1_2], [0, 1], [-Math.SQRT1_2, Math.SQRT1_2], [-1, 0], [-Math.SQRT1_2, -Math.SQRT1_2], [0, -1], [Math.SQRT1_2, -Math.SQRT1_2]];
   const TACTICAL_VERSION = 'minion-tactical/2';
+  const FARM_VERSION = 'minion-tactical/3';
   const hash = text => { let h = 2166136261; for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619); return h >>> 0; };
   const clip = (n, limit = 1) => Math.max(-limit, Math.min(limit, n));
   function features(state, actor, init, memory = {}, version = null) {
@@ -45,7 +46,7 @@
     walk(scene, 'state', ''); walk(map, 'map', ''); walk(init.cfg, 'cfg', ''); walk(init.characters, 'characters', '');
     walk(memory, 'history', '');
     for (let i = 0; i < SIZE; i++) vector[i] = clip(vector[i], 8);
-    if (version === TACTICAL_VERSION) {
+    if ([TACTICAL_VERSION, FARM_VERSION].includes(version)) {
       const cfg = { ...init.cfg, ...(init.characters.find(c => c.id === me.character)?.stats || {}) };
       const enemy = state.players.find(p => p.id !== actor && p.vis && !p.dead);
       const home = init.map.spawns[me.slot], homeD = Math.hypot(home.x - me.x, home.z - me.z);
@@ -66,6 +67,23 @@
         me.speedBoost > 0 ? 1 : 0, Math.sin(me.face) * sign, Math.cos(me.face) * sign,
         clip(me.energy / 100), clip((me.x - me.z) * sign / 60), homeD > 0 ? (x * (home.x - me.x) + z * (home.z - me.z)) / homeD : 0];
       tactical.forEach((v, i) => { vector[SIZE - 32 + i] = Number.isFinite(v) ? clip(v) : 0; });
+      if (version === FARM_VERSION) {
+        const own = state.control.find(c => c.slot === me.slot);
+        const distance = e => Math.hypot(e.x - me.x, e.z - me.z);
+        const nearest = entities => [...entities].sort((a, b) => distance(a) - distance(b))[0];
+        const monster = nearest((state.monsters || []).filter(m => !m.large && !m.dead
+          && own && (me.slot === 1 ? m.z - m.x : m.x - m.z) < own.boundary));
+        const pickup = nearest(state.energy || []);
+        const target = targets(state, me, init).find(e => e.id === me.inputs?.target);
+        const relative = e => e && Number.isFinite(e.x) && Number.isFinite(e.z)
+          ? [(e.x - me.x) * sign / 60, (e.z - me.z) * sign / 60] : [0, 0];
+        const farm = [monster ? 1 : 0, ...relative(monster), monster ? distance(monster) / 60 : 1,
+          monster ? monster.hp / monster.maxHp : 0, monster && distance(monster) <= cfg.atkRange + .9 ? 1 : 0,
+          monster && distance(monster) <= cfg.qRange + .9 ? 1 : 0, target?.slot === 2 ? 1 : 0,
+          pickup ? 1 : 0, ...relative(pickup), pickup ? distance(pickup) / 60 : 1,
+          ...relative(me.inputs?.dest), ...relative(target)];
+        farm.forEach((v, i) => { vector[SIZE - 48 + i] = Number.isFinite(v) ? clip(v) : 0; });
+      }
     }
     return vector;
   }
@@ -97,9 +115,10 @@
   function validate(model) {
     if (model?.format !== VERSION || model.inputSize !== SIZE || JSON.stringify(model.events) !== JSON.stringify(EVENTS) || !Array.isArray(model.characters) || !model.characters.length || model.characters.some(id => !['alex', 'mira', 'bastion', 'lucia', 'darius'].includes(id))) throw Error('対応していないミニオンモデルです。');
     const h = model.hiddenSize, w = model.weights;
-    if (model.featureVersion && model.featureVersion !== TACTICAL_VERSION) throw Error('対応していない観測形式です。');
+    if (model.featureVersion && ![TACTICAL_VERSION, FARM_VERSION].includes(model.featureVersion)) throw Error('対応していない観測形式です。');
     if (model.movementOrder && !['stop-clears-chase/1', 'learned-chase-order/1'].includes(model.movementOrder)) throw Error('対応していない移動操作形式です。');
     if (model.controlProtocol && model.controlProtocol !== 'release-before-chase/1') throw Error('対応していない攻撃操作形式です。');
+    if (model.aimProtocol && model.aimProtocol !== 'release-invalid-leap/1') throw Error('対応していない照準操作形式です。');
     if (!Number.isInteger(h) || h < 1 || h > 256 || !model.init?.map?.spawns || !w) throw Error('モデルの設定が不正です。');
     for (const [name, rows, columns] of [['hiddenW', h, SIZE], ['typeW', EVENTS.length, h], ['pointW', EVENTS.length * 2, h]]) {
       if (!Array.isArray(w[name]) || w[name].length !== rows || w[name].some(row => !Array.isArray(row) || row.length !== columns || row.some(n => !Number.isFinite(n)))) throw Error('モデルの重みが不正です。');
@@ -180,8 +199,16 @@
   }
   function commands(model, state, actor, action) {
     if (action.event === 'noop') return [];
+    if (action.event === 'leap' && model.aimProtocol === 'release-invalid-leap/1') {
+      const me = state.players.find(p => p.id === actor), init = model.init;
+      const cfg = { ...init.cfg, ...(init.characters.find(c => c.id === me.character)?.stats || {}) };
+      const world = root.ArenaWorld || (typeof require === 'function' ? require('../game-world') : null);
+      const blocks = [...init.map.obst, ...state.towers.filter(t => !t.dead).map(t => ({ x: t.x, z: t.z, r: cfg.tower.radius }))];
+      if (!world.validLanding(me, action.data, { range: cfg.leapRange, radius: cfg.radius, half: init.map.half,
+        blocks, safe: { ...init.map.spawns[1 - me.slot], r: cfg.safeRadius }, travel: true })) return [{ event: 'cancelLeap' }];
+    }
     if (action.event === 'chase' && model.controlProtocol === 'release-before-chase/1') return [{ event: 'steer', data: { x: 0, z: 0 } }, action];
-    if (action.event === 'steer' && model.featureVersion === TACTICAL_VERSION) {
+    if (action.event === 'steer' && [TACTICAL_VERSION, FARM_VERSION].includes(model.featureVersion)) {
       if (model.weights.orderW && !action.cancelChase && Math.hypot(action.data.x, action.data.z) > 0.01) return [action];
       if (model.movementOrder === 'stop-clears-chase/1' && Math.hypot(action.data.x, action.data.z) > 0.01) return [action];
       const me = state.players.find(p => p.id === actor);
@@ -214,6 +241,6 @@
     act.reset = () => { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = 17; lastTick = -1; };
     return act;
   }
-  const api = { VERSION, SIZE, EVENTS, DIRECTIONS, TACTICAL_VERSION, features, updateMemory, label, validate, forward, actionMask, decode, decide, commands, controller };
+  const api = { VERSION, SIZE, EVENTS, DIRECTIONS, TACTICAL_VERSION, FARM_VERSION, features, updateMemory, label, validate, forward, actionMask, decode, decide, commands, controller };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.MinionPolicy = api;
 })(globalThis);

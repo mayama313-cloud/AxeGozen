@@ -2,28 +2,63 @@
 (() => {
   const handlers = new Map();
   let network = null, local = null, timer = null, running = false, replay = null;
+  let seriesWorker = null, seriesRendering = false;
   const dispatch = (event, data) => { for (const fn of handlers.get(event) || []) fn(data); };
   const session = {
     mode: 'offline',
     get replaying() { return !!replay; },
-    get connected() { return !!local || !!network?.connected; },
+    get readOnly() { return !!replay || session.mode === 'series'; },
+    get rendering() { return session.mode !== 'series' || seriesRendering; },
+    get connected() { return !!local || !!network?.connected || !!seriesWorker; },
     on(event, fn) {
       if (!handlers.has(event)) handlers.set(event, []);
       handlers.get(event).push(fn);
     },
     emit(event, data) {
-      if (replay) return;
+      if (replay || session.mode === 'series') return;
       if (local) local.receive(event, data);
       else if (network) network.emit(event, data);
     },
     stop() {
       running = false;
       replay = null;
+      if (seriesWorker) seriesWorker.terminate();
+      seriesWorker = null; seriesRendering = false;
       window.trainingRecorder?.finish('stopped');
       if (timer) clearInterval(timer);
       timer = null; local = null;
       if (network) { network.removeAllListeners(); network.disconnect(); network = null; }
       dispatch('lobby');
+    },
+    openSeries() { session.stop(); session.mode = 'series'; dispatch('seriesSetup'); },
+    startSeries(config) {
+      session.stop(); session.mode = 'series'; running = true; seriesRendering = !!config.render;
+      if (typeof Worker !== 'function') { dispatch('seriesSetup'); dispatch('seriesError', 'このブラウザーではWeb Workerを利用できません。'); return; }
+      let worker;
+      try { worker = seriesWorker = new Worker('match-series-worker.js'); }
+      catch (error) { running = false; seriesRendering = false; dispatch('seriesSetup'); dispatch('seriesError', error.message); return; }
+      worker.onmessage = ({ data }) => {
+        if (seriesWorker !== worker) return;
+        if (data.type === 'progress') { dispatch('seriesProgress', data); dispatch('seriesView', { render: seriesRendering }); }
+        if (data.type === 'frame') {
+          if (data.init) dispatch('init', data.init);
+          dispatch('state', data.state);
+          for (const event of data.events || []) dispatch(event.event, event.data);
+        }
+        if (data.type === 'error') { seriesRendering = false; dispatch('seriesView', { render: false }); dispatch('seriesError', data.message); }
+      };
+      worker.onerror = event => {
+        if (seriesWorker !== worker) return;
+        worker.terminate(); seriesWorker = null; seriesRendering = false; running = false;
+        dispatch('seriesView', { render: false }); dispatch('seriesError', event.message || '自動対戦を実行できませんでした。');
+      };
+      dispatch('seriesSetup', { starting: true }); worker.postMessage({ type: 'start', config });
+    },
+    seriesCommand(type) { seriesWorker?.postMessage({ type }); },
+    seriesView({ render, speed, watch }) {
+      seriesRendering = !!render;
+      seriesWorker?.postMessage({ type: 'view', render: seriesRendering, speed, watch });
+      dispatch('seriesView', { render: seriesRendering && !!seriesWorker });
     },
     start(mode, { model = null } = {}) {
       session.stop(); running = true; session.mode = mode;

@@ -1,10 +1,12 @@
 (() => {
   const el = id => document.getElementById(id), session = window.gameSession;
-  let selfId = null, model = null, useModel = false;
+  let selfId = null, model = null, useModel = false, activeScreen = null;
   function screen(name) {
+    if (activeScreen !== name) el('lobby').scrollTop = 0;
+    activeScreen = name;
     el('lobby').hidden = name === 'game';
     el('hud').hidden = name !== 'game';
-    for (const id of ['lobbyHome', 'matchmaking', 'characterSelect']) el(id).hidden = id !== name;
+    for (const id of ['lobbyHome', 'matchmaking', 'characterSelect', 'seriesPanel']) if (el(id)) el(id).hidden = id !== name;
   }
   function renderCards(characters) {
     el('characterCards').replaceChildren();
@@ -35,6 +37,7 @@
   });
   el('startMatch').addEventListener('click', () => {
     const mode = document.querySelector('input[name="mode"]:checked').value;
+    if (mode === 'series') { session.openSeries(); return; }
     useModel = mode === 'cpu' && el('cpuController').value === 'model' && !!model;
     session.start(mode, { model: useModel ? model : null });
     if (useModel) session.emit('selectCpuCharacter', { id: model.characters[0] });
@@ -49,6 +52,8 @@
     el('matchingMessage').textContent = mode === 'online' ? '参加した順にマッチングします。相手が見つかるまでお待ちください。' : 'キャラクターを選択して始めましょう。';
     el('restart').hidden = mode === 'online' || mode === 'replay';
   });
+  session.on('seriesSetup', () => { screen('seriesPanel'); el('restart').hidden = true; });
+  session.on('seriesView', ({ render }) => screen(render ? 'game' : 'seriesPanel'));
   session.on('init', data => {
     selfId = data.id; renderCards(data.characters);
     el('cpuCharacterPicker').hidden = !data.cpu;
@@ -61,6 +66,7 @@
     }
   });
   session.on('state', state => {
+    if (session.mode === 'series') return;
     if (state.phase === 'playing' || state.phase === 'finished') { screen('game'); return; }
     if (state.phase !== 'selecting') return;
     screen('characterSelect');

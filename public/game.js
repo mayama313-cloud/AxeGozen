@@ -442,7 +442,7 @@ function hud(st) {
   const list = st.players;
   const m = list.find(s => s.id === myId), f = list.find(s => s.id !== myId);
   if (!m || !cfg) return;
-  const locked = socket.replaying || m.dead || m.stun > 0 || m.warping > 0 || m.air > 0 || m.charging || m.grabbing || m.grabbed || m.flying || phase !== 'playing';
+  const locked = socket.readOnly || m.dead || m.stun > 0 || m.warping > 0 || m.air > 0 || m.charging || m.grabbing || m.grabbed || m.flying || phase !== 'playing';
   for (const key of ['q', 'e', 'c', 'b']) $(key + 'Skill').disabled = locked || (key !== 'b' && m[key + 'Cd'] > 0);
   $('touchAttack').disabled = locked;
   touchControls?.update();
@@ -461,7 +461,7 @@ function hud(st) {
   const own = st.towers.filter(t => t.slot === mySlot && !t.dead).length;
   const enemy = st.towers.filter(t => t.slot !== mySlot && !t.dead).length;
   $('objective').textContent = `タワー残り　自陣 ${own}/5　敵陣 ${enemy}/5｜エネルギー ${m.energy || 0}｜自陣領域 ${Math.round(100 * (1 + (st.control?.[mySlot]?.boundary || 0) / 60) ** 2)}%`;
-  $('status').textContent = `${st.cpu ? 'CPU対戦' : st.solo ? 'オフライン' : 'オンライン対戦'}｜${character?.name || ''}｜次回の復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}${m.shield > 0 ? '｜ダメージ50%軽減中' : ''}${m.speedBoost > 0 ? `｜移動速度2倍 ${m.speedBoost.toFixed(1)}秒` : ''}`;
+  $('status').textContent = `${socket.mode === 'series' ? '自動対戦・観戦' : st.cpu ? 'CPU対戦' : st.solo ? 'オフライン' : 'オンライン対戦'}｜${character?.name || ''}｜次回の復活 ${m.respawnTime}秒${m.safe ? '｜安全地帯：無敵・HP急速回復' : ''}${m.shield > 0 ? '｜ダメージ50%軽減中' : ''}${m.speedBoost > 0 ? `｜移動速度2倍 ${m.speedBoost.toFixed(1)}秒` : ''}`;
   $('status').title = character?.passive || '';
   if (socket.replaying) $('status').textContent = 'リプレイ｜' + $('status').textContent;
   if (m.stealth > 0) $('status').textContent += `｜透明化 ${m.stealth.toFixed(1)}秒`;
@@ -542,7 +542,7 @@ skillArrow.rotation.x = Math.PI / 2; skillLine.add(skillArrow); skillLine.visibl
 const skillAim = createSkillAim({
   mode: () => gameControls.mode,
   self: () => ents[myId]?.s,
-  playing: () => phase === 'playing',
+  playing: () => phase === 'playing' && !socket.readOnly,
   point: () => touchTarget || groundAt(mouse),
   validLeap: validLeapPoint,
   emit: (event, data) => { if (event === 'leap' || (event === 'dash' && data)) clearKeys(); socket.emit(event, data); },
@@ -600,7 +600,7 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('mousemove', ev => { mouse = ev; });
 canvas.addEventListener('mousedown', ev => {
   if (ev.sourceCapabilities?.firesTouchEvents) return;
-  if (!myId || phase !== 'playing') return;
+  if (!myId || phase !== 'playing' || socket.readOnly) return;
   if (skillAim.current) {
     if (ev.button === 2) skillAim.cancel();
     else if (ev.button === 0) skillAim.confirm(groundAt(ev));
@@ -627,7 +627,7 @@ function commandAt(ev) {
   else { socket.emit('move', g); marker(g); }
 }
 addEventListener('keydown', ev => {
-  if (ev.repeat || ev.ctrlKey || ev.metaKey || ev.altKey || !myId || phase !== 'playing' || ev.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
+  if (ev.repeat || ev.ctrlKey || ev.metaKey || ev.altKey || !myId || phase !== 'playing' || socket.readOnly || ev.target.closest('button, a, input, textarea, select, [contenteditable]')) return;
   const k = gameControls.action(ev.code);
   if (ev.code === 'Escape') { skillAim.cancel(); return; }
   if (['w', 'a', 's', 'd'].includes(k)) {
@@ -646,7 +646,7 @@ touchControls = createTouchControls({
   attackButton: $('touchAttack'), cancelButton: $('touchCancel'), aim: skillAim,
   canPlay: () => {
     const s = ents[myId]?.s;
-    return phase === 'playing' && s && !s.dead && !(s.stun > 0) && !(s.air > 0) && !(s.warping > 0) && !s.charging && !s.grabbing && !s.grabbed && !s.flying;
+    return phase === 'playing' && !socket.readOnly && s && !s.dead && !(s.stun > 0) && !(s.air > 0) && !(s.warping > 0) && !s.charging && !s.grabbing && !s.grabbed && !s.flying;
   },
   move: (x,z) => { touchMove = { x,z }; if (myId) sendKeys(); },
   targetAt: groundAt, setTarget: point => { touchTarget = point; }, command: commandAt,
@@ -667,6 +667,7 @@ touchControls = createTouchControls({
 const clock = new THREE.Clock();
 function frame() {
   const dt = Math.min(clock.getDelta(), 0.1), t = clock.elapsedTime;
+  if (!socket.rendering) { requestAnimationFrame(frame); return; }
   const k = 1 - Math.exp(-dt * 20);
   if (phase === 'playing' && (heldKeys.size || touchMove.x || touchMove.z) && performance.now() - lastSteer >= 100) sendKeys();
 

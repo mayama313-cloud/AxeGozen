@@ -110,6 +110,7 @@
   @media (max-width: 360px) { .touch-ui #touchStick { width: 104px; height: 104px; left: 8px; } .touch-ui #touchAttack, .touch-ui #touchCancel { width: 52px; height: 52px; right: 132px; } .touch-ui #skills { right: 8px; gap: 6px; } }
 </style>
 <link rel="stylesheet" href="training.css">
+<link rel="stylesheet" href="match-series.css">
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
@@ -133,6 +134,7 @@
       <label class="mode-option"><input type="radio" name="mode" value="cpu"><strong>CPU対戦</strong><p>好きなキャラのCPUと1対1。敵タワー5本を先に破壊すると勝利。通信なしで遊べます。</p></label>
       <label class="mode-option"><input type="radio" name="mode" value="offline" checked><strong>オフライン</strong><p>1人用のタワー攻略練習。対戦通信なしで操作やスキルを試せます。</p></label>
       <label class="mode-option"><input type="radio" name="mode" value="online"><strong>オンライン</strong><p>参加中のプレイヤーと1対1でマッチング。2人が準備できたら開戦します。</p></label>
+      <label class="mode-option"><input type="radio" name="mode" value="series"><strong>自動対戦・勝率計測</strong><p>モデルやアルゴリズムを対戦させ、指定した本数を先取するまで勝敗を集計。高速処理と観戦を選べます。</p></label>
     </div>
     <button id="startMatch" type="button" class="primary">試合開始</button>
     <p><label>CPUの操作 <select id="cpuController"><option value="algorithm">アルゴリズム</option><option value="model" disabled>ミニオン v1（モデルを読み込んでください）</option></select></label>
@@ -152,7 +154,68 @@
     <div id="characterCards"></div>
     <div class="lobby-actions"><button id="confirmCharacter" type="button" class="primary" disabled>選択を確定・準備完了</button><button id="leaveSelection" type="button">ロビーに戻る</button><span id="opponentSelection"></span></div>
   </section>
+  <section id="seriesPanel" class="lobby-panel" hidden>
+    <div class="eyebrow">AUTO MATCH / FIRST TO</div><h2>自動対戦・勝率計測</h2>
+    <p>両陣営を指定し、タワー5本を破壊して決着するまで対戦します。標準では試合時間は無制限です。</p>
+    <fieldset id="seriesSettings">
+      <legend>対戦設定</legend>
+      <div class="series-entries">
+        <section class="series-entry" data-entry="0"><h3>A陣営</h3>
+          <label>表示名<input id="seriesLabel0" type="text" value="A" maxlength="120"></label>
+          <label>操作主体<select id="seriesKind0"><option value="algorithm">アルゴリズム</option><option value="model">学習モデル（JSON）</option></select></label>
+          <label id="seriesFileGroup0" hidden>モデルファイル<input id="seriesFile0" type="file" accept=".json,application/json"></label>
+          <p id="seriesModel0" class="series-note"></p>
+          <label>キャラクター<select id="seriesCharacter0"></select></label>
+        </section>
+        <section class="series-entry" data-entry="1"><h3>B陣営</h3>
+          <label>表示名<input id="seriesLabel1" type="text" value="B" maxlength="120"></label>
+          <label>操作主体<select id="seriesKind1"><option value="algorithm">アルゴリズム</option><option value="model">学習モデル（JSON）</option></select></label>
+          <label id="seriesFileGroup1" hidden>モデルファイル<input id="seriesFile1" type="file" accept=".json,application/json"></label>
+          <p id="seriesModel1" class="series-note"></p>
+          <label>キャラクター<select id="seriesCharacter1"></select></label>
+        </section>
+      </div>
+      <div class="series-options">
+        <label>先取本数<input id="seriesFirstTo" type="number" min="1" max="1000" step="1" value="3"></label>
+        <label>乱数シード<input id="seriesSeed" type="number" min="0" max="4294967295" step="1" value="17"></label>
+        <label>1試合の上限（分）<input id="seriesTimeLimit" type="number" min="0" max="1440" step="1" value="0"><small>0は無制限。上限に達した試合は引き分け。</small></label>
+      </div>
+      <label class="series-check"><input id="seriesAlternate" type="checkbox" checked>試合ごとに初期陣営を交代する</label>
+    </fieldset>
+    <div class="series-view-options">
+      <label class="series-check"><input id="seriesRender" type="checkbox">試合を描画する（オフなら裏で高速処理）</label>
+      <label>描画時の速度<select id="seriesSpeed"><option value="1">1倍</option><option value="4">4倍</option><option value="16">16倍</option><option value="64">64倍</option></select></label>
+      <label>観戦視点<select id="seriesWatch"><option value="0">A陣営</option><option value="1">B陣営</option></select></label>
+    </div>
+    <div class="series-toolbar">
+      <button id="seriesStart" class="primary" type="button">自動対戦を開始</button>
+      <button data-series-action="pause" type="button" disabled>一時停止</button>
+      <button data-series-action="draw" type="button" disabled>この試合を引き分けに</button>
+      <button data-series-action="stop" type="button" disabled>中止</button>
+      <button data-series-action="download" type="button" disabled>結果JSONを保存</button>
+      <button id="seriesBack" type="button">ロビーへ</button>
+    </div>
+    <p data-series-status role="status">対戦設定を選んで開始してください。</p>
+    <div class="series-score" data-series-score>0 − 0</div><p data-series-clock></p>
+    <p class="series-note">勝率は決着した試合の勝数 ÷ 決着数。引き分けと中止時の未決着試合は除きます。途中で描画のオン・オフを切り替えられます。</p>
+    <div class="series-table-wrap"><table><thead><tr><th>陣営</th><th>操作主体・キャラ</th><th>勝数</th><th>勝率</th><th>現在のタワー</th><th>エネルギー</th></tr></thead><tbody id="seriesStandings"></tbody></table></div>
+    <h3>試合結果</h3><p id="seriesResultsNote" class="series-note">まだ決着した試合はありません。</p>
+    <div class="series-table-wrap"><table><thead><tr><th>試合</th><th>結果</th><th>時間</th><th>初期陣営</th><th>タワー残数 A / B</th><th>エネルギー A / B</th></tr></thead><tbody id="seriesResults"></tbody></table></div>
+  </section>
 </main>
+<aside id="seriesMonitor" hidden aria-label="自動対戦の進行状況">
+  <strong>自動対戦・観戦</strong><div class="series-score" data-series-score>0 − 0</div>
+  <p data-series-status></p><p data-series-clock></p>
+  <div class="series-toolbar">
+    <button data-series-action="pause" type="button">一時停止</button>
+    <button data-series-action="draw" type="button">この試合を引き分けに</button>
+    <button data-series-action="stop" type="button">中止</button>
+    <button data-series-action="background" type="button">描画なし・結果パネルへ</button>
+    <button data-series-action="download" type="button">結果JSONを保存</button>
+  </div>
+  <label>視点<select id="seriesWatchLive"><option value="0">A陣営</option><option value="1">B陣営</option></select></label>
+  <label>速度<select id="seriesSpeedLive"><option value="1">1倍</option><option value="4">4倍</option><option value="16">16倍</option><option value="64">64倍</option></select></label>
+</aside>
 <div id="hud" hidden>
 <div class="bar" id="meBar"><i id="playerHpFill"></i></div>
 <div class="bar" id="foeBar"><i id="enemyHpFill"></i></div>
@@ -215,6 +278,7 @@
 <script src="training-data.js"></script>
 <script src="minion-objectives.js"></script>
 <script src="minion-policy.js"></script>
+<script src="match-series.js"></script>
 <script src="session.js"></script>
 <script src="audio.js"></script>
 <script src="skill-aim.js"></script>
@@ -222,6 +286,7 @@
 <script src="touch-controls.js"></script>
 <script src="game.js"></script>
 <script src="lobby.js"></script>
+<script src="match-series-ui.js"></script>
 <script src="training-ui.js"></script>
 </body>
 </html>

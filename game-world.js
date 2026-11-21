@@ -69,12 +69,14 @@ function validLanding(from, to, { range, radius, half, blocks, safe, travel = fa
   return [...blocks, safe].every(o => dist(to, o) + 1e-8 >= o.r + radius);
 }
 
-function createMatch(solo = false, cpu = false, { trace = null, policy = null, opponent = false, onCombat = null } = {}) {
+function createMatch(solo = false, cpu = false, { trace = null, policy = null, opponent = false, onCombat = null, controllers = null } = {}) {
+  if (controllers && (!Array.isArray(controllers) || controllers.length !== 2 || controllers.some(c => c !== null && typeof c !== 'function'))) throw Error('controllers must contain two policies or null for algorithm');
   let tickNumber = 0;
   const report = data => { if (trace) trace({ tick: tickNumber, time: tickNumber / TICK, ...data }); };
   const inputEvents = new Set(['steer', 'move', 'chase', 'q', 'dash', 'c', 'leap', 'cancelLeap', 'recall']);
   let cpuSocket = null;
-  const isAlgorithm = p => !!p && ((p.socket === cpuSocket && !policy) || (opponent && p.slot === 0 && !!p.socket));
+  const policyFor = p => p && (controllers ? controllers[p.slot] : p.socket === cpuSocket ? policy : null);
+  const isAlgorithm = p => !!p && (controllers ? !!p.socket && !policyFor(p) : (p.socket === cpuSocket && !policy) || (opponent && p.slot === 0 && !!p.socket));
   const command = (p, event, data) => p.commands?.[event]?.(data);
   const players = {}, robots = {}, towers = {}, projectiles = {}, monsters = {}, energy = {};
   const environment = { enabled: true, totals: [0, 0] };
@@ -106,7 +108,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   function emitSee(src, ev, data) {
     for (const v of Object.values(players)) if (canSee(v.slot, src)) {
       v.socket.emit(ev, data);
-      if (v.socket === cpuSocket && policy?.observe) policy.observe({ event: ev, data, time: tickNumber / TICK });
+      policyFor(v)?.observe?.({ event: ev, data, time: tickNumber / TICK });
       if (trace) report({ kind: 'event', actor: v.id, event: ev, data });
     }
   }
@@ -282,7 +284,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   }
   function reset() {
     report({ kind: 'reset' });
-    if (policy?.reset) policy.reset();
+    for (const control of new Set(controllers || [policy])) control?.reset?.();
     tickNumber = 0;
     winner = null; elapsed = 0; energyTimer = 0; environment.totals = [0, 0];
     for (const collection of [monsters, energy]) for (const id of Object.keys(collection)) delete collection[id];
@@ -339,7 +341,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     if (onCombat) onCombat({ kind: 'kill', source: a.id, owner: a.owner || null, target: b.id, large: !!b.large, slot: a.slot, targetSlot: b.slot, targetKind: kill.victim.kind });
     for (const viewer of Object.values(players)) {
       viewer.socket.emit('kill', kill);
-      if (viewer.socket === cpuSocket && policy?.observe) policy.observe({ event: 'kill', data: kill, time: tickNumber / TICK });
+      policyFor(viewer)?.observe?.({ event: 'kill', data: kill, time: tickNumber / TICK });
       if (trace) report({ kind: 'event', actor: viewer.id, event: 'kill', data: kill });
     }
     award(a, b.monster ? (b.large ? 30 : 8) : b.tower ? 25 : isRobot(b) ? 3 : 15);
@@ -589,7 +591,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     if (solo || Object.keys(players).length === 2) phase = 'selecting';
     const init = { id: p.id, slot, cfg: CFG, map: MAP, solo, cpu, characters: CHARACTERS, rulesVersion: 'minion-v1-collection-1' };
     socket.emit('init', init);
-    report({ kind: 'init', actor: p.id, source: isAlgorithm(p) ? 'algorithm' : socket === cpuSocket ? 'model' : 'human', data: init });
+    report({ kind: 'init', actor: p.id, source: isAlgorithm(p) ? 'algorithm' : policyFor(p) ? 'model' : 'human', data: init });
     listen('selectCharacter', d => {
       if (phase !== 'selecting' || p.confirmed || !characterFor(d?.id)) return;
       p.character = d.id; p.cfg = configFor(d.id); spawn(p);
@@ -776,9 +778,10 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   function thinkCpu(p) {
     p.thinkTime = decay(p.thinkTime);
     if (p.thinkTime > 0) return;
-    if (p.socket === cpuSocket && policy) {
+    const control = policyFor(p);
+    if (control) {
       p.thinkTime = 0.1;
-      for (const action of policy(view(p)) || []) if (inputEvents.has(action.event)) command(p, action.event, action.data);
+      for (const action of control(view(p)) || []) if (inputEvents.has(action.event)) command(p, action.event, action.data);
       return;
     }
     p.thinkTime = 0.2;
@@ -870,7 +873,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   }
   function tickPlayer(p) {
     if (isAlgorithm(p)) observeCpu(p);
-    if (p.socket === cpuSocket && policy?.observeState) policy.observeState(view(p));
+    policyFor(p)?.observeState?.(view(p));
     for (const cd of ['atkCd', 'qCd', 'eCd', 'cCd']) p[cd] = Math.max(0, p[cd] - DT);
     if (p.dead) { p.respawn = decay(p.respawn); if (p.respawn <= 0) spawn(p); return; }
     p.moving = false;
@@ -896,7 +899,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
       if (protectedUnit(p)) p.hp = Math.min(p.cfg.maxHp, p.hp + CFG.safeHeal * DT);
       return;
     }
-    if (p.socket === cpuSocket || isAlgorithm(p)) {
+    if (policyFor(p) || p.socket === cpuSocket || isAlgorithm(p)) {
       thinkCpu(p);
       if (!active() || p.warp || p.charge || p.grabbing) return;
       if (p.leap) { tickLeap(p); return; }
@@ -1005,7 +1008,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     }
     const list = Object.values(players);
     for (const v of list) {
-      if (v.socket === cpuSocket) continue;
+      if (v.socket === cpuSocket || controllers) continue;
       v.socket.emit('state', view(v));
     }
     if (trace && advanced) recordFrame();

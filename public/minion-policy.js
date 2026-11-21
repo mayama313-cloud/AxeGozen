@@ -276,11 +276,13 @@
     }
     return [action];
   }
-  function controller(model) {
-    validate(model); const memory = {}; let lastTick = -1, cues = [], seed = 17;
+  function controller(model, { slot = 1, seed: initialSeed = 17 } = {}) {
+    validate(model);
+    if (![0, 1].includes(slot) || !Number.isInteger(initialSeed)) throw Error('Invalid controller slot or seed');
+    const memory = {}; let lastTick = -1, cues = [], seed = initialSeed >>> 0;
     const observeState = state => {
-      const actor = state.players.find(p => p.slot === 1)?.id;
-      if (state.tick < lastTick) { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = 17; }
+      const actor = state.players.find(p => p.slot === slot)?.id;
+      if (state.tick < lastTick) { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = initialSeed >>> 0; }
       lastTick = state.tick;
       updateMemory(memory, state, actor, cues, model.featureVersion); cues = [];
       return actor;
@@ -298,7 +300,7 @@
     };
     act.observe = event => cues.push(event);
     act.observeState = observeState;
-    act.reset = () => { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = 17; lastTick = -1; };
+    act.reset = () => { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = initialSeed >>> 0; lastTick = -1; };
     return act;
   }
   const api = { VERSION, SIZE, EVENTS, DIRECTIONS, TACTICAL_VERSION, FARM_VERSION, DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION, features, updateMemory, defenseContext, label, validate, forward, actionMask, decode, decide, commands, controller };

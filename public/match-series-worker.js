@@ -1,5 +1,5 @@
 'use strict';
-importScripts('/game-world.js', 'minion-objectives.js', 'minion-perception.js', 'minion-policy.js', 'team-config.js', 'match-series.js', 'competition.js');
+importScripts('/game-world.js', 'minion-objectives.js', 'minion-perception.js', 'minion-decisions.js', 'minion-policy.js', 'team-config.js', 'match-series.js', 'competition.js');
 let series = null, render = false, speed = 1, watch = 0, watchMember = 0, timer = null, last = 0, debt = 0, lastUpdate = 0, lastFrame = 0, sent = 0, token = null;
 function publish(force = false) {
   if (!series) return;

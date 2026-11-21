@@ -10,7 +10,7 @@ const { createMatch, TICK } = require('../game-world');
 const { preflight, parseJSON, readJSON } = require('./minion-input');
 const root = path.resolve(__dirname, '..');
 const arg = (name, fallback) => { const i = process.argv.indexOf('--' + name); return i < 0 ? fallback : process.argv[i + 1]; };
-const output = path.resolve(arg('output', path.join(root, process.argv[2] === 'rl' ? 'datas/models/minion-v1-rl' : 'datas/models/minion-v1')));
+const output = path.resolve(arg('output', path.join(root, process.argv[2] === 'league' ? 'datas/models/minion-v1-v12-league' : process.argv[2] === 'rl' ? 'datas/models/minion-v1-rl' : 'datas/models/minion-v1')));
 const fingerprint = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 async function prepare() {
@@ -135,6 +135,22 @@ function smoke() {
 
 (async () => {
   const command = process.argv[2] || 'check';
+  if (command === 'league') {
+    const initial = path.resolve(arg('model', 'datas/models/minion-v1-v11-combat/model.json'));
+    Policy.validate(readJSON(initial));
+    const histories = process.argv.flatMap((v,i) => v === '--history' ? [path.resolve(process.argv[i+1])] : []);
+    if (!histories.length) histories.push(path.resolve('datas/models/minion-v1-v10-bush-adapter/model.json'),path.resolve('datas/models/minion-v1-v8-offense/model.json'));
+    histories.forEach(f => Policy.validate(readJSON(f)));
+    const args = [path.join(__dirname,'train-minion-league.py'),'--model',initial,'--output',output,'--node',process.execPath];
+    for (const file of histories) args.push('--history',file);
+    for (const [name,fallback] of Object.entries({ updates:'128',steps:'128',envs:'8','max-seconds':'600','interval-ticks':'6','snapshot-every':'8','history-size':'6',seed:'20261204','eval-games':'8','eval-seconds':'900','latest-weight':'4','history-weight':'3','algorithm-weight':'3','learning-rate':'.0003' })) args.push('--'+name,arg(name,fallback));
+    const result=spawnSync(arg('python','python'),args,{stdio:'inherit'});
+    if (result.error || result.status !== 0) throw result.error || Error('リーグ学習に失敗しました。');
+    const model=Policy.validate(readJSON(path.join(output,'model.json'))),probe=readJSON(path.join(output,'league-parity.json')),D=require('../public/minion-decisions');
+    const error=Math.abs(D.score(model.tacticalPolicy,probe.candidate,D.context(model.tacticalPolicy,probe.x))-probe.score);
+    if (error > 1e-4) throw Error('リーグ方策のPython/JavaScript不一致: '+error);
+    console.log(JSON.stringify({leagueParityError:error,report:path.join(output,'league-training.json')})); return;
+  }
   if (['check', 'prepare', 'train'].includes(command)) await prepare();
   if (command === 'train') {
     const result = spawnSync(arg('python', 'python'), [path.join(__dirname, 'train-minion.py'), '--output', output, '--epochs', arg('epochs', '30')], { stdio: 'inherit' });
@@ -143,6 +159,18 @@ function smoke() {
   if (command === 'rl') {
     const initial = path.resolve(arg('model', path.join(root, 'datas/models/minion-v1/model.json')));
     Policy.validate(readJSON(initial));
+    if (process.argv.includes('--combat-decisions')) {
+      const args = [path.join(__dirname, 'train-minion-decisions.py'), '--model', initial, '--output', output, '--node', process.execPath];
+      if (process.argv.includes('--scope-encounter')) args.push('--scope-encounter');
+      if (arg('focus-character', null)) args.push('--focus-character', arg('focus-character', null));
+      for (const [name, fallback] of Object.entries({ updates: '100', steps: '96', envs: '8', 'max-seconds': '25', 'eval-every': '20', 'eval-episodes': '64', 'eval-seconds': '25', seed: '20261127', 'decision-fraction': '.75', 'base-prior': '4.5' })) args.push('--' + name, arg(name, fallback));
+      const trained = spawnSync(arg('python', 'python'), args, { stdio: 'inherit' });
+      if (trained.error || trained.status !== 0) throw trained.error || Error('戦闘判断のPPO学習に失敗しました。');
+      const model = Policy.validate(readJSON(path.join(output, 'model.json'))), parity = readJSON(path.join(output, 'decision-parity.json'));
+      const error = Math.abs(require('../public/minion-decisions').score(model.tacticalPolicy, parity.x) - parity.score);
+      if (error > 1e-5) throw Error('戦闘判断の推論不一致: ' + error);
+      console.log(JSON.stringify({ decisionParityError: error })); smoke(); return;
+    }
     const args = [path.join(__dirname, 'reinforce-minion.py'), '--model', initial, '--output', output, '--node', process.execPath];
     if (process.argv.includes('--train-base')) args.push('--train-base');
     if (process.argv.includes('--hybrid') && process.argv.includes('--pure-rl')) throw Error('--hybrid と --pure-rl は同時に指定できません。');

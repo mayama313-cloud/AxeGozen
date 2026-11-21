@@ -199,6 +199,7 @@
     if (w.perceptionW && (model.featureVersion !== PERCEPTION_VERSION || !Array.isArray(w.perceptionW) || w.perceptionW.length !== 41
       || w.perceptionW.some(row => !Array.isArray(row) || row.length !== 32 || row.some(n => !Number.isFinite(n))))) throw Error('ブッシュ観測用の重みが不正です。');
     if (model.objectivePolicy) (root.MinionObjectives || require('./minion-objectives')).validate(model.objectivePolicy);
+    if (model.tacticalPolicy) (root.MinionDecisions || require('./minion-decisions')).validate(model.tacticalPolicy);
     return model;
   }
   function forward(model, x) {
@@ -247,7 +248,8 @@
     if (escape) return escape;
     const objective = model.decisionMode !== 'learned/1' && model.objectivePolicy ? (root.MinionObjectives || require('./minion-objectives')).plan(model, observation, actor, memory) : null;
     if (objective && !objective.fallbackInputs) return objective;
-    const result = forward(model, features(observation, actor, model.init, memory, model.featureVersion));
+    const observationFeatures = features(observation, actor, model.init, memory, model.featureVersion);
+    const result = forward(model, observationFeatures);
     const allowed = actionMask(model, observation, actor);
     let type = 0;
     for (let i = 1; i < EVENTS.length; i++) if (allowed[i] && result.logits[i] > result.logits[type]) type = i;
@@ -274,6 +276,7 @@
       action.cancelChase = Math.hypot(...point) < .01 || (orderDraw === null ? probability >= .5 : orderDraw < probability);
     }
     if (objective?.fallbackInputs) action.prefixInputs = objective.fallbackInputs;
+    if (model.tacticalPolicy) return (root.MinionDecisions || require('./minion-decisions')).choose(model, observation, actor, action, memory, observationFeatures);
     return escapeAction(action) || action;
   }
   function commands(model, state, actor, action) {
@@ -299,8 +302,9 @@
   }
   function controller(model, { slot = 1, seed: initialSeed = 17, actorId = null } = {}) {
     validate(model);
+    if (model.decisionIntervalTicks !== undefined && (!Number.isInteger(model.decisionIntervalTicks) || model.decisionIntervalTicks < 3 || model.decisionIntervalTicks > 9)) throw Error('Invalid policy decision interval');
     if (![0, 1].includes(slot) || !Number.isInteger(initialSeed)) throw Error('Invalid controller slot or seed');
-    const memory = {}; let lastTick = -1, cues = [], seed = initialSeed >>> 0;
+    const memory = {}; let lastTick = -1, lastDecisionTick = -Infinity, cues = [], seed = initialSeed >>> 0;
     const observeState = state => {
       const actor = actorId || state.players.find(p => p.slot === slot && p.inputs)?.id || state.players.find(p => p.slot === slot)?.id;
       if (state.tick < lastTick) { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = initialSeed >>> 0; }
@@ -310,6 +314,9 @@
     };
     const act = state => {
       const actor = observeState(state);
+      if (state.tick < lastDecisionTick) lastDecisionTick = -Infinity;
+      if (model.decisionIntervalTicks && state.tick - lastDecisionTick < model.decisionIntervalTicks) return [];
+      lastDecisionTick = state.tick;
       seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
       const draw = seed / 4294967296;
       let directionDraw = null;
@@ -321,7 +328,7 @@
     };
     act.observe = event => cues.push(event);
     act.observeState = observeState;
-    act.reset = () => { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = initialSeed >>> 0; lastTick = -1; };
+    act.reset = () => { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = initialSeed >>> 0; lastTick = -1; lastDecisionTick = -Infinity; };
     return act;
   }
   const api = { VERSION, SIZE, EVENTS, DIRECTIONS, TACTICAL_VERSION, FARM_VERSION, DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION, PERCEPTION_VERSION, features, updateMemory, defenseContext, label, validate, forward, actionMask, decode, decide, commands, controller };

@@ -145,9 +145,13 @@ function smoke() {
     Policy.validate(readJSON(initial));
     const args = [path.join(__dirname, 'reinforce-minion.py'), '--model', initial, '--output', output, '--node', process.execPath];
     if (process.argv.includes('--train-base')) args.push('--train-base');
+    if (process.argv.includes('--hybrid') && process.argv.includes('--pure-rl')) throw Error('--hybrid と --pure-rl は同時に指定できません。');
+    if (!process.argv.includes('--hybrid')) args.push('--pure-rl');
+    if (process.argv.includes('--bush-memory')) args.push('--bush-memory');
+    if (process.argv.includes('--perception-adapter')) args.push('--perception-adapter');
     const reference = arg('reference-model', null);
     if (reference) { const full = path.resolve(reference); Policy.validate(readJSON(full)); args.push('--reference-model', full); }
-    for (const [name, fallback] of Object.entries({ updates: '100', steps: '128', envs: '4', 'max-seconds': '120', 'retreat-fraction': '0.25', 'farm-fraction': '0.2', 'defense-fraction': '0.3', 'eval-episodes': '16', 'eval-seconds': '60', 'eval-every': '25', seed: '17' })) args.push('--' + name, arg(name, fallback));
+    for (const [name, fallback] of Object.entries({ updates: '100', steps: '128', envs: '4', 'max-seconds': '120', 'retreat-fraction': '0.25', 'farm-fraction': '0.2', 'defense-fraction': '0.3', 'bush-fraction': '0', 'eval-episodes': '16', 'eval-seconds': '60', 'eval-every': '25', seed: '17' })) args.push('--' + name, arg(name, fallback));
     const result = spawnSync(arg('python', 'python'), args, { stdio: 'inherit' });
     if (result.error || result.status !== 0) throw result.error || Error('強化学習に失敗しました。');
   }

@@ -76,3 +76,21 @@ test('algorithm CPUs also use escape mobility for every character', () => {
     game.tick(); assert.ok(me.eCd > 0, id);
   }
 });
+
+test('learned decision mode never invokes the retreat override or objective selector', () => {
+  const { game, me, model } = fixture('alex'), state = game.observe(me.id);
+  assert.ok(World.retreatInputs(state, me.id));
+  model.decisionMode = 'learned/1';
+  const action = Policy.decide(model, state, me.id, {});
+  assert.equal(action.event, 'noop'); assert.equal(action.retreatMobility, undefined);
+  assert.equal(action.objectiveInputs, undefined);
+  const Goals = require('./public/minion-objectives'), row = Array(Goals.OFFENSE_NAMES.length).fill(0); row[1] = 1;
+  model.objectivePolicy = { version: Goals.OFFENSE_VERSION, features: Goals.OFFENSE_NAMES, camps: [], hiddenSize: 1,
+    weights: { hiddenW: [row], hiddenB: [0], outputW: [[10]], outputB: [0] } };
+  state.players.find(p => p.id === me.id).hp = me.cfg.maxHp;
+  state.monsters = [{ id: 'farm', slot: 2, x: -1, z: 8, hp: 100, maxHp: 100, large: false }];
+  Policy.validate(model);
+  assert.equal(Policy.decide(model, state, me.id, {}).event, 'noop');
+  delete model.decisionMode;
+  assert.equal(Policy.decide(model, state, me.id, {}).objectiveGoal.kind, 'small');
+});

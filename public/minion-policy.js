@@ -8,13 +8,16 @@
   const DEFENSE_VERSION = 'minion-tactical/4';
   const ADAPTER_VERSION = 'minion-defense-adapter/5';
   const ALARM_VERSION = 'minion-defense-alarm/6';
+  const PERCEPTION_VERSION = 'minion-bush-memory/10';
   const hash = text => { let h = 2166136261; for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619); return h >>> 0; };
   const clip = (n, limit = 1) => Math.max(-limit, Math.min(limit, n));
   function features(state, actor, init, memory = {}, version = null) {
+    const perception = version === PERCEPTION_VERSION;
+    if (perception) version = ALARM_VERSION;
     const me = state.players.find(p => p.id === actor);
     if (!me) throw Error('モデルの視点がありません。');
     const adapter = [ADAPTER_VERSION, ALARM_VERSION].includes(version);
-    const sign = me.slot === 1 ? -1 : 1, vector = new Float32Array(adapter ? SIZE + 16 : SIZE);
+    const sign = me.slot === 1 ? -1 : 1, vector = new Float32Array(adapter ? SIZE + 16 + (perception ? 32 : 0) : SIZE);
     const ids = new Map([[actor, 'self']]);
     for (const p of state.players) if (p.id !== actor) ids.set(p.id, p.slot === me.slot ? `ally/${p.member || 0}` : state.players.length > 2 ? `opponent/${p.member || 0}` : 'opponent');
     const scene = { ...state, players: [me, ...state.players.filter(p => p.id !== actor)], control: [...(state.control || [])].sort((a, b) => (a.slot === me.slot ? 0 : 1) - (b.slot === me.slot ? 0 : 1)) };
@@ -51,6 +54,7 @@
     // Tower history has reserved inputs in v4; hashing it again would perturb the old policy everywhere.
     const history = [DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version) || memory.objectives ? { ...memory } : memory;
     if (memory.objectives) delete history.objectives;
+    if (perception) delete history.perception;
     if ([DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version)) delete history.towers;
     walk(history, 'history', '');
     for (let i = 0; i < SIZE; i++) vector[i] = clip(vector[i], 8);
@@ -110,11 +114,16 @@
           = adapter && !t ? 0 : Number.isFinite(v) ? clip(v) : 0; });
       }
     }
+    if (perception) vector.set((root.MinionPerception || require('./minion-perception')).features(memory, state, actor), 1040);
     return vector;
   }
-  function updateMemory(memory, state, actor, events = [], version = null) {
+  function updateMemory(memory, state, actor, events = [], version = null, init = null) {
     if (memory.time > state.time) { for (const key of Object.keys(memory)) delete memory[key]; }
     memory.time = state.time; memory.lastSeen ||= {};
+    if (version === PERCEPTION_VERSION) {
+      (root.MinionPerception || require('./minion-perception')).update(memory, state, actor, events, init);
+      version = ALARM_VERSION;
+    }
     const self = state.players.find(p => p.id === actor);
     for (const p of state.players) if (p.slot !== self?.slot && p.vis) memory.lastSeen.opponent = { x: p.x, z: p.z, seenAt: state.time, character: p.character };
     memory.cues ||= [];
@@ -165,12 +174,13 @@
       : [clip((point.x - me.x) * sign / 60), clip((point.z - me.z) * sign / 60)] : [0, 0], hasPoint };
   }
   function validate(model) {
-    if (model?.format !== VERSION || model.inputSize !== ([ADAPTER_VERSION, ALARM_VERSION].includes(model.featureVersion) ? SIZE + 16 : SIZE) || JSON.stringify(model.events) !== JSON.stringify(EVENTS) || !Array.isArray(model.characters) || !model.characters.length || model.characters.some(id => !['alex', 'mira', 'bastion', 'lucia', 'darius'].includes(id))) throw Error('対応していないミニオンモデルです。');
+    if (model?.format !== VERSION || model.inputSize !== (model.featureVersion === PERCEPTION_VERSION ? 1072 : [ADAPTER_VERSION, ALARM_VERSION].includes(model.featureVersion) ? SIZE + 16 : SIZE) || JSON.stringify(model.events) !== JSON.stringify(EVENTS) || !Array.isArray(model.characters) || !model.characters.length || model.characters.some(id => !['alex', 'mira', 'bastion', 'lucia', 'darius'].includes(id))) throw Error('対応していないミニオンモデルです。');
     const h = model.hiddenSize, w = model.weights;
-    if (model.featureVersion && ![TACTICAL_VERSION, FARM_VERSION, DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(model.featureVersion)) throw Error('対応していない観測形式です。');
+    if (model.featureVersion && ![TACTICAL_VERSION, FARM_VERSION, DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION, PERCEPTION_VERSION].includes(model.featureVersion)) throw Error('対応していない観測形式です。');
     if (model.movementOrder && !['stop-clears-chase/1', 'learned-chase-order/1'].includes(model.movementOrder)) throw Error('対応していない移動操作形式です。');
     if (model.controlProtocol && model.controlProtocol !== 'release-before-chase/1') throw Error('対応していない攻撃操作形式です。');
     if (model.aimProtocol && model.aimProtocol !== 'release-invalid-leap/1') throw Error('対応していない照準操作形式です。');
+    if (model.decisionMode && model.decisionMode !== 'learned/1') throw Error('対応していない判断方式です。');
     if (!Number.isInteger(h) || h < 1 || h > 256 || !model.init?.map?.spawns || !w) throw Error('モデルの設定が不正です。');
     for (const [name, rows, columns] of [['hiddenW', h, model.inputSize], ['typeW', EVENTS.length, h], ['pointW', EVENTS.length * 2, h]]) {
       if (!Array.isArray(w[name]) || w[name].length !== rows || w[name].some(row => !Array.isArray(row) || row.length !== columns || row.some(n => !Number.isFinite(n)))) throw Error('モデルの重みが不正です。');
@@ -184,8 +194,10 @@
       if (!Array.isArray(w.orderW) || w.orderW.length !== 2 || w.orderW.some(row => !Array.isArray(row) || row.length !== h || row.some(n => !Number.isFinite(n)))
         || !Array.isArray(w.orderB) || w.orderB.length !== 2 || w.orderB.some(n => !Number.isFinite(n))) throw Error('追跡操作の重みが不正です。');
     }
-    if (w.defenseW && (![ADAPTER_VERSION, ALARM_VERSION].includes(model.featureVersion) || !Array.isArray(w.defenseW) || w.defenseW.length !== 41
+    if (w.defenseW && (![ADAPTER_VERSION, ALARM_VERSION, PERCEPTION_VERSION].includes(model.featureVersion) || !Array.isArray(w.defenseW) || w.defenseW.length !== 41
       || w.defenseW.some(row => !Array.isArray(row) || row.length !== 16 || row.some(n => !Number.isFinite(n))))) throw Error('防衛用の重みが不正です。');
+    if (w.perceptionW && (model.featureVersion !== PERCEPTION_VERSION || !Array.isArray(w.perceptionW) || w.perceptionW.length !== 41
+      || w.perceptionW.some(row => !Array.isArray(row) || row.length !== 32 || row.some(n => !Number.isFinite(n))))) throw Error('ブッシュ観測用の重みが不正です。');
     if (model.objectivePolicy) (root.MinionObjectives || require('./minion-objectives')).validate(model.objectivePolicy);
     return model;
   }
@@ -193,6 +205,7 @@
     const dense = (w, b, v) => w.map((row, i) => row.reduce((sum, n, j) => sum + n * v[j], b[i]));
     const w = model.weights, hidden = dense(w.hiddenW, w.hiddenB, x).map(Math.tanh);
     const extra = w.defenseW ? dense(w.defenseW, Array(41).fill(0), x.slice(SIZE)) : Array(41).fill(0);
+    if (w.perceptionW) dense(w.perceptionW, Array(41).fill(0), x.slice(1040)).forEach((v, i) => { extra[i] += v; });
     const points = dense(w.pointW, w.pointB, hidden).map((n, i) => Math.tanh(n + extra[10 + i]));
     const directions = w.directionW ? dense(w.directionW, w.directionB, hidden).map((n, i) => n + extra[30 + i] + 1.5 * (DIRECTIONS[i][0] * points[2] + DIRECTIONS[i][1] * points[3])) : null;
     const orders = w.orderW ? dense(w.orderW, w.orderB, hidden).map((n, i) => n + extra[39 + i]) : null;
@@ -227,12 +240,12 @@
     if (!me || !model.characters.includes(me.character)) return { event: 'noop', data: null };
     const world = root.ArenaWorld || (typeof require === 'function' ? require('../game-world') : null);
     const escapeAction = intent => {
-      const inputs = world?.retreatInputs?.(observation, actor, intent);
+      const inputs = model.decisionMode === 'learned/1' ? null : world?.retreatInputs?.(observation, actor, intent);
       return inputs ? { event: inputs[0].event, data: inputs[0].data, objectiveInputs: inputs, retreatMobility: true } : null;
     };
     const escape = escapeAction(null);
     if (escape) return escape;
-    const objective = model.objectivePolicy ? (root.MinionObjectives || require('./minion-objectives')).plan(model, observation, actor, memory) : null;
+    const objective = model.decisionMode !== 'learned/1' && model.objectivePolicy ? (root.MinionObjectives || require('./minion-objectives')).plan(model, observation, actor, memory) : null;
     if (objective && !objective.fallbackInputs) return objective;
     const result = forward(model, features(observation, actor, model.init, memory, model.featureVersion));
     const allowed = actionMask(model, observation, actor);
@@ -276,7 +289,7 @@
         blocks, safe: { ...init.map.spawns[1 - me.slot], r: cfg.safeRadius }, travel: true })) return [{ event: 'cancelLeap' }];
     }
     if (action.event === 'chase' && model.controlProtocol === 'release-before-chase/1') return [{ event: 'steer', data: { x: 0, z: 0 } }, action];
-    if (action.event === 'steer' && [TACTICAL_VERSION, FARM_VERSION, DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(model.featureVersion)) {
+    if (action.event === 'steer' && [TACTICAL_VERSION, FARM_VERSION, DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION, PERCEPTION_VERSION].includes(model.featureVersion)) {
       if (model.weights.orderW && !action.cancelChase && Math.hypot(action.data.x, action.data.z) > 0.01) return [action];
       if (model.movementOrder === 'stop-clears-chase/1' && Math.hypot(action.data.x, action.data.z) > 0.01) return [action];
       const me = state.players.find(p => p.id === actor);
@@ -292,7 +305,7 @@
       const actor = actorId || state.players.find(p => p.slot === slot && p.inputs)?.id || state.players.find(p => p.slot === slot)?.id;
       if (state.tick < lastTick) { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = initialSeed >>> 0; }
       lastTick = state.tick;
-      updateMemory(memory, state, actor, cues, model.featureVersion); cues = [];
+      updateMemory(memory, state, actor, cues, model.featureVersion, model.init); cues = [];
       return actor;
     };
     const act = state => {
@@ -311,6 +324,6 @@
     act.reset = () => { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = initialSeed >>> 0; lastTick = -1; };
     return act;
   }
-  const api = { VERSION, SIZE, EVENTS, DIRECTIONS, TACTICAL_VERSION, FARM_VERSION, DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION, features, updateMemory, defenseContext, label, validate, forward, actionMask, decode, decide, commands, controller };
+  const api = { VERSION, SIZE, EVENTS, DIRECTIONS, TACTICAL_VERSION, FARM_VERSION, DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION, PERCEPTION_VERSION, features, updateMemory, defenseContext, label, validate, forward, actionMask, decode, decide, commands, controller };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.MinionPolicy = api;
 })(globalThis);

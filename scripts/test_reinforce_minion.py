@@ -30,6 +30,43 @@ class AdvantageTests(unittest.TestCase):
 
 
 class SteeringTests(unittest.TestCase):
+    def test_bush_adapter_updates_only_its_learned_residual_and_preserves_no_evidence_outputs(self):
+        model = self.model(); model['inputSize'] = 1040; model['featureVersion'] = 'minion-defense-alarm/6'
+        model['weights']['hiddenW'] = [[0.] * 1040 for _ in range(2)]
+        module.upgrade_perception(model); model['perceptionAdapter'] = 'frozen-base/1'
+        actor = module.ActorCritic(model)
+        x = torch.zeros(2, 1072); base = actor(x)[0].detach().clone(); x[:, 1040] = 1
+        actor(x)[0].sum().backward()
+        self.assertIsNone(actor.hidden.weight.grad)
+        self.assertIsNone(actor.defense.weight.grad)
+        self.assertGreater(float(actor.perception.weight.grad.abs().sum()), 0.)
+        with torch.no_grad():
+            actor.perception.weight.add_(1)
+        torch.testing.assert_close(actor(torch.zeros(2, 1072))[0], base)
+
+    def test_perception_upgrade_preserves_base_and_is_trainable_and_idempotent(self):
+        model = self.model()
+        model['inputSize'] = 1040
+        model['featureVersion'] = 'minion-defense-alarm/6'
+        model['weights']['hiddenW'] = [[1.] * 1040 for _ in range(2)]
+        model['weights']['typeW'][0] = [1., 1.]
+        module.upgrade_perception(model)
+        self.assertEqual(model['inputSize'], 1072)
+        self.assertEqual(model['weights']['hiddenW'][0][:1040], [1.] * 1040)
+        self.assertEqual(model['weights']['hiddenW'][0][1040:], [0.] * 32)
+        module.upgrade_perception(model)
+        self.assertEqual(len(model['weights']['hiddenW'][0]), 1072)
+        actor = module.ActorCritic(model)
+        x = torch.zeros(2, 1072); x[:, 1040:] = 1
+        actor(x)[0].sum().backward()
+        self.assertGreater(float(actor.hidden.weight.grad[:, 1040:].abs().sum()), 0.)
+
+    def test_survival_selection_does_not_trade_recovery_for_farming(self):
+        safe = {'retreatRecoveries': 7, 'retreatAttempts': 8, 'wins': 0, 'losses': 0,
+                'deaths': 1, 'episodes': 12, 'normalMatchEnergy': 8, 'defenseStops': 1, 'meanReturn': 0}
+        reckless = {**safe, 'retreatRecoveries': 1, 'deaths': 7, 'normalMatchEnergy': 100, 'meanReturn': 10}
+        self.assertGreater(module.survival_selection_score(safe), module.survival_selection_score(reckless))
+
     def model(self):
         hidden, size, actions = 2, 32, 10
         return {'inputSize': size, 'hiddenSize': hidden, 'events': list(range(actions)), 'weights': {

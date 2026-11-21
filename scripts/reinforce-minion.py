@@ -29,7 +29,12 @@ class ActorCritic(nn.Module):
         self.critic_hidden = nn.Linear(size, hidden)
         self.value = nn.Linear(hidden, 1)
         self.log_std = nn.Parameter(torch.full((count, 2), math.log(0.25)))
-        self.defense = nn.Linear(16, 41, bias=False) if size == 1040 else None
+        self.defense = nn.Linear(16, 41, bias=False) if size in [1040, 1072] else None
+        self.perception = nn.Linear(32, 41, bias=False) if size == 1072 else None
+        if self.perception is not None:
+            nn.init.zeros_(self.perception.weight)
+            if 'perceptionW' in model['weights']:
+                self.perception.weight.data.copy_(torch.tensor(model['weights']['perceptionW']))
         if self.defense is not None:
             nn.init.zeros_(self.defense.weight)
             if 'defenseW' in model['weights']:
@@ -63,11 +68,18 @@ class ActorCritic(nn.Module):
             for layer in [self.hidden, self.types, self.points, self.direction, self.order]:
                 for parameter in layer.parameters():
                     parameter.requires_grad_(False)
+        if model.get('perceptionAdapter') == 'frozen-base/1':
+            for layer in [self.hidden, self.types, self.points, self.direction, self.order, self.defense]:
+                if layer is not None:
+                    for parameter in layer.parameters():
+                        parameter.requires_grad_(False)
         self.register_buffer('direction_vectors', torch.tensor([[0, 0], [1, 0], [2 ** -.5, 2 ** -.5], [0, 1], [-2 ** -.5, 2 ** -.5], [-1, 0], [-2 ** -.5, -2 ** -.5], [0, -1], [2 ** -.5, -2 ** -.5]], dtype=torch.float32))
 
     def forward(self, x):
         hidden = torch.tanh(self.hidden(x))
-        extra = self.defense(x[:, 1024:]) if self.defense is not None else x.new_zeros((len(x), 41))
+        extra = self.defense(x[:, 1024:1040]) if self.defense is not None else x.new_zeros((len(x), 41))
+        if self.perception is not None:
+            extra = extra + self.perception(x[:, 1040:1072])
         points = (self.points(hidden) + extra[:, 10:30]).reshape(-1, self.log_std.shape[0], 2)
         directions = (self.direction(hidden) + extra[:, 30:39] + 1.5 * torch.tanh(points[:, 1]) @ self.direction_vectors.T) / self.temperature
         value = self.value(torch.tanh(self.critic_hidden(x))).flatten()
@@ -159,6 +171,9 @@ def summarize(evaluation):
     matches = [e for e in episodes if e['scenario'] == 'match']
     defense = [e for e in episodes if e['scenario'] == 'defense']
     return {'episodes': len(episodes), 'meanReturn': sum(e['return'] for e in episodes) / max(1, len(episodes)),
+            'bushAttempts': sum(e['scenario'] in ['bush-entry', 'bush-attack'] for e in episodes),
+            'bushHitEpisodes': sum(e['scenario'] in ['bush-entry', 'bush-attack'] and e.get('damageDealt', 0) > 0 for e in episodes),
+            'bushFalseVisits': sum(e['scenario'] == 'bush-empty' and e.get('bushInvestigated', False) for e in episodes),
             'wins': sum(e['winner'] == 1 for e in episodes), 'losses': sum(e['winner'] == 0 for e in episodes),
             'timeouts': sum(e['truncated'] for e in episodes), 'deaths': sum(e['deaths'] for e in episodes),
             'retreatAttempts': len(retreat), 'retreatRecoveries': sum(e['recovery'] for e in retreat),
@@ -189,8 +204,16 @@ def eligible_for_selection(stats, baseline):
     return (stats['normalMatchEnergy'] >= baseline['normalMatchEnergy'] * .85 and recovery >= baseline_recovery - .125) or stats['wins'] > baseline['wins']
 
 
+def survival_selection_score(stats):
+    return (stats['retreatRecoveries'] / max(1, stats['retreatAttempts']),
+            -stats['deaths'] / max(1, stats['episodes']), stats['wins'] - stats['losses'],
+            stats['normalMatchEnergy'], stats['defenseStops'], stats['meanReturn'])
+
+
 def upgrade_features(model):
     previous = model.get('featureVersion')
+    if previous == 'minion-bush-memory/10':
+        return
     if previous in ['minion-defense-adapter/5', 'minion-defense-alarm/6']:
         model['featureVersion'] = 'minion-defense-alarm/6'
         return
@@ -209,6 +232,18 @@ def upgrade_features(model):
     model['defenseAdapter'] = 'frozen-base/1'
 
 
+def upgrade_perception(model):
+    upgrade_features(model)
+    if model.get('featureVersion') == 'minion-bush-memory/10':
+        return
+    for row in model['weights']['hiddenW']:
+        row.extend([0.] * 32)
+    for row in model.get('reinforcementLearning', {}).get('valueHiddenW', []):
+        row.extend([0.] * 32)
+    model['inputSize'] = 1072
+    model['featureVersion'] = 'minion-bush-memory/10'
+
+
 def defense_lesson_loss(categorical, means, lesson, mask):
     active = lesson[:, 0] * mask[:, 3].float()
     return ((-categorical.log_prob(torch.full_like(active, 3, dtype=torch.long))
@@ -221,6 +256,10 @@ def main():
     parser.add_argument('--model', type=Path, required=True)
     parser.add_argument('--reference-model', type=Path)
     parser.add_argument('--train-base', action='store_true')
+    parser.add_argument('--pure-rl', action='store_true', help='Train the whole actor without runtime tactical overrides or supervised defense lessons')
+    parser.add_argument('--bush-memory', action='store_true')
+    parser.add_argument('--perception-adapter', action='store_true')
+    parser.add_argument('--bush-fraction', type=float, default=0.)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--updates', type=int, default=100)
     parser.add_argument('--steps', type=int, default=128)
@@ -234,6 +273,12 @@ def main():
     parser.add_argument('--eval-every', type=int, default=25)
     parser.add_argument('--seed', type=int, default=17)
     args = parser.parse_args()
+    if args.bush_memory:
+        args.pure_rl = True
+    if args.perception_adapter and not args.bush_memory:
+        raise ValueError('--perception-adapter requires --bush-memory')
+    if not 0 <= args.bush_fraction <= 1 or args.retreat_fraction + args.farm_fraction + args.defense_fraction + args.bush_fraction > 1:
+        raise ValueError('Scenario fractions must total at most 1')
     if not (1 <= args.updates <= 100000 and 8 <= args.steps <= 2048 and 1 <= args.envs <= 32 and 1 <= args.max_seconds <= 1200 and 0 <= args.retreat_fraction <= 1 and 0 <= args.farm_fraction <= 1 and 0 <= args.defense_fraction <= 1 and args.retreat_fraction + args.farm_fraction + args.defense_fraction <= 1 and 2 <= args.eval_episodes <= 100 and 1 <= args.eval_seconds <= 1200 and args.eval_every >= 1):
         raise ValueError('Invalid RL training parameters')
     args.output.mkdir(parents=True, exist_ok=True)
@@ -251,8 +296,18 @@ def main():
     # and get a categorical steering head that can explore the opposite direction.
     base = copy.deepcopy(base)
     upgrade_features(base)
-    if args.train_base:
+    if args.bush_memory:
+        upgrade_perception(base)
+    if args.perception_adapter:
+        base['perceptionAdapter'] = 'frozen-base/1'
+    if args.train_base or args.pure_rl:
         base['defenseAdapter'] = 'trainable-base/1'
+    if args.pure_rl:
+        base['decisionMode'] = 'learned/1'
+        base.pop('objectivePolicy', None)
+        base['modelName'] = 'ミニオン v1（v9 PPO）'
+        if args.bush_memory:
+            base['modelName'] = 'ミニオン v1（v10 ブッシュ認識 PPO）'
     base.setdefault('reinforcementLearning', {})['temperature'] = 1.
     base['movementOrder'] = 'learned-chase-order/1'
     base['controlProtocol'] = 'release-before-chase/1'
@@ -265,6 +320,8 @@ def main():
     if not set(base['characters']).issubset(reference_model['characters']):
         raise ValueError('Reference model must support every training character')
     upgrade_features(reference_model)
+    if args.bush_memory:
+        upgrade_perception(reference_model)
     reference_model.setdefault('reinforcementLearning', {})['temperature'] = actor.temperature
     reference = ActorCritic(reference_model).eval()
     if reference.hidden.weight.shape != actor.hidden.weight.shape:
@@ -274,8 +331,10 @@ def main():
     for p in reference.parameters():
         p.requires_grad_(False)
     adapter_parameters = list(actor.defense.parameters()) if actor.defense is not None else []
+    if actor.perception is not None:
+        adapter_parameters += list(actor.perception.parameters())
     adapter_ids = {id(p) for p in adapter_parameters}
-    optimizer = torch.optim.Adam([{'params': [p for p in actor.parameters() if id(p) not in adapter_ids], 'lr': .0001},
+    optimizer = torch.optim.Adam([{'params': [p for p in actor.parameters() if id(p) not in adapter_ids], 'lr': .0003 if args.pure_rl else .0001},
                                   {'params': adapter_parameters, 'lr': .001}])
     gamma, lam = .997, .99
     engine = Engine(args.node)
@@ -290,6 +349,14 @@ def main():
               'limitations': ['short runs do not establish improvement', 'the reference algorithm opponent is not a human',
                               'truncated games are timeouts, not wins', 'checkpoint resume resets the optimizer',
                               'coordinate exploration is used for training; deployment uses predicted mean coordinates']}
+    if args.pure_rl:
+        report.update({'decisionMode': 'learned/1', 'rewardProfile': 'survival/1', 'defenseLesson': None,
+                       'learningRate': .0003, 'runtimeOverrides': False, 'selectionPriority': 'recovery, survival, wins, farming',
+                       'referenceKlWeight': .005, 'healthyReferenceKlExtra': .25, 'trainingResetProfile': 'retreat-persistent-orders/1'})
+    if args.bush_memory:
+        report.update({'perceptionVersion': 'minion-bush-memory/10', 'bushFraction': args.bush_fraction})
+    if args.perception_adapter:
+        report['policyTraining'] = 'PPO bush-observation residual; previously PPO-trained base frozen; no runtime action override'
     def save_model():
         model = copy.deepcopy(base)
         model.pop('selection', None)
@@ -304,6 +371,8 @@ def main():
             model['weights'][prefix + 'B'] = layer.bias.detach().tolist()
         if actor.defense is not None:
             model['weights']['defenseW'] = actor.defense.weight.detach().tolist()
+        if actor.perception is not None:
+            model['weights']['perceptionW'] = actor.perception.weight.detach().tolist()
         checkpoint = args.output / 'latest-model.json'
         temporary = args.output / 'model.tmp'
         temporary.write_text(json.dumps(model, ensure_ascii=False), encoding='utf-8')
@@ -318,7 +387,7 @@ def main():
         stats = summarize(measured)
         if validation_baseline is None:
             validation_baseline = stats
-        score = selection_score(stats, validation_baseline)
+        score = ((stats['bushHitEpisodes'] / max(1, stats['bushAttempts']), -stats['bushFalseVisits']) + survival_selection_score(stats)) if args.bush_memory else survival_selection_score(stats) if args.pure_rl else selection_score(stats, validation_baseline)
         eligible = eligible_for_selection(stats, validation_baseline)
         accepted = eligible and (selected_score is None or score > selected_score)
         report['selectionHistory'].append({'tag': tag, 'summary': stats, 'score': list(score), 'eligible': eligible, 'accepted': accepted})
@@ -340,17 +409,20 @@ def main():
         warm['weights']['orderB'] = actor.order.bias.detach().tolist()
         warm_start.write_text(json.dumps(warm, ensure_ascii=False), encoding='utf-8')
         initialized = engine.call({'op': 'init', 'model': str(warm_start.resolve()), 'envs': args.envs,
-                                   'options': {'gamma': gamma, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction, 'farmFraction': args.farm_fraction, 'defenseFraction': args.defense_fraction, 'seed': args.seed}})
+                                   'options': {'gamma': gamma, 'maxSeconds': args.max_seconds, 'retreatFraction': args.retreat_fraction, 'farmFraction': args.farm_fraction, 'defenseFraction': args.defense_fraction, 'bushFraction': args.bush_fraction, 'seed': args.seed, 'rewardProfile': 'survival/1' if args.pure_rl else None}})
         report['rewardConfig'] = initialized['rewards']
         report['potentialConfig'] = initialized['shaping']
-        evaluation_options = {'episodes': args.eval_episodes, 'maxSeconds': args.eval_seconds, 'seed': args.seed + 100000, 'gamma': gamma, 'characters': base['characters']}
+        evaluation_options = {'episodes': args.eval_episodes, 'maxSeconds': args.eval_seconds, 'seed': args.seed + 100000, 'gamma': gamma, 'characters': base['characters'], 'rewardProfile': 'survival/1' if args.pure_rl else None}
+        if args.bush_memory:
+            evaluation_options['scenarios'] = ['match', 'farm', 'retreat', 'defense', 'bush-entry', 'bush-attack', 'bush-empty', 'bush-exit']
         selection_options = {**evaluation_options, 'seed': args.seed + 200000}
         report['before'] = engine.call({'op': 'evaluate', 'model': str(initial_snapshot.resolve()), 'options': evaluation_options})
         print(json.dumps({'before': summarize(report['before'])}), flush=True)
         report['warmStart'] = engine.call({'op': 'evaluate', 'model': str(warm_start.resolve()), 'options': evaluation_options})
         print(json.dumps({'warmStart': summarize(report['warmStart'])}), flush=True)
-        consider(initial_snapshot, 'initial')
-        consider(reference_snapshot, 'imitation-reference')
+        if not args.pure_rl:
+            consider(initial_snapshot, 'initial')
+            consider(reference_snapshot, 'imitation-reference')
         consider(warm_start, 'warm-start')
         observations = initialized['observations']
         for update in range(args.updates):
@@ -392,9 +464,9 @@ def main():
                     anchor = kl_divergence(reference_cat, categorical) + .1 * (means - reference_means).square().mean(dim=(1, 2)) + .1 * kl_divergence(reference_steering, steering) + .1 * kl_divergence(reference_orders, orders)
                     hp = batch['x'][indices, 992].clamp(0, 1)
                     threat = batch['x'][indices, 1024].clamp(0, 1)
-                    anchor_weight = (.02 + .2 * hp.square()) * (1 - .9 * threat)
+                    anchor_weight = (.005 + .25 * hp.square()) if args.pure_rl else (.02 + .2 * hp.square()) * (1 - .9 * threat)
                     lesson = batch['lesson'][indices]
-                    lesson_loss = defense_lesson_loss(categorical, means, lesson, batch['mask'][indices])
+                    lesson_loss = categorical.logits.sum() * 0 if args.pure_rl else defense_lesson_loss(categorical, means, lesson, batch['mask'][indices])
                     loss = policy_loss + .5 * value_loss - .005 * entropy.mean() + (anchor_weight * anchor).mean() + lesson_loss
                     if not torch.isfinite(loss):
                         raise RuntimeError('Non-finite PPO loss')

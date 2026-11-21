@@ -412,6 +412,7 @@ socket.on('state', st => {
 });
 
 socket.on('fx', d => {
+  if (d.kind === 'bushAttack') { arc(d.x, d.z, 0, .9, Math.PI, 0xffb45c); return; }
   const e = ents[d.id];
   if (!e) return;
   e.swing = 0.25;

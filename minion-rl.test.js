@@ -4,6 +4,22 @@ const World = require('./game-world');
 const Policy = require('./public/minion-policy');
 const { Environment, potential, emptyAttack, evaluate, REWARDS } = require('./scripts/minion-rl-env');
 
+test('survival shaping values a safer position at fixed HP without prescribing an action', () => {
+  const env = new Environment(model(), { seed: 1, rewardProfile: 'survival/1' }); env.reset('retreat');
+  const a = structuredClone(env.state), b = structuredClone(env.state);
+  const me = a.players.find(p => p.id === 'cpu-player'), safe = b.players.find(p => p.id === 'cpu-player');
+  Object.assign(me, { x: -8, z: 8 }); Object.assign(safe, { x: 8, z: -8 });
+  assert.ok(potential(b, safe.id, env.model.init, {}, true) > potential(a, me.id, env.model.init, {}, true));
+});
+
+test('survival training includes low-health actors that still have a chase order to cancel', () => {
+  const m = model(); m.decisionMode = 'learned/1';
+  const env = new Environment(m, { seed: 1, rewardProfile: 'survival/1' }); env.reset('retreat-chase');
+  assert.equal(env.state.players.find(p => p.id === 'cpu-player').inputs.target, 'opponent');
+  assert.ok(env.game.state.players['cpu-player'].hp < env.game.state.players['cpu-player'].cfg.maxHp * .5);
+  assert.throws(() => new Environment(m, { rewardProfile: 'unknown' }));
+});
+
 function model() {
   return { format: Policy.VERSION, inputSize: Policy.SIZE, hiddenSize: 1, characters: ['alex'], events: Policy.EVENTS,
     init: { map: World.MAP, cfg: World.CFG, characters: World.CHARACTERS },

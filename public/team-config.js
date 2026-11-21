@@ -26,6 +26,7 @@
     return { member: index, kind: member.kind, label: member.label, character: member.character,
       characterName: World.characterFor(member.character).name,
       model: member.kind === 'model' ? { name: member.model?.modelName || '学習モデル',
+        decisionMode: member.model?.decisionMode || 'hybrid',
         format: member.model?.format || null, featureVersion: member.model?.featureVersion || null,
         objectiveVersion: member.model?.objectivePolicy?.version || null, characters: member.model?.characters || [],
         fileName: member.fileName, sha256: member.sha256, ready: !!member.model } : null };

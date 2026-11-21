@@ -161,7 +161,18 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     report({ kind: 'action', actor: p.id, origin, event, data: payload, observation: view(p) });
   }
   const boosted = (a, b) => (isRobot(a) ? players[a.owner]?.character : a.character) === 'alex' && (b.tower || isRobot(b));
-  const fx = (p, kind, extra = {}) => emitSee(p, 'fx', { id: p.id, character: p.character, kind, x: r2(p.x), z: r2(p.z), face: r2(p.face), ...extra });
+  const fx = (p, kind, extra = {}) => {
+    emitSee(p, 'fx', { id: p.id, character: p.character, kind, x: r2(p.x), z: r2(p.z), face: r2(p.face), ...extra });
+    if (!players[p.id] || p.bush < 0 || p.stealth > 0 || p.warp || !['atk', 'q', 'magic', 'abyss', 'grab', 'uppercut'].includes(kind)) return;
+    const range = kind === 'atk' ? p.cfg.atkRange : kind === 'magic' ? p.cfg.magicRange : kind === 'uppercut' ? p.cfg.cRange : p.cfg.qRange;
+    // The nearby defender sees the same transient attack trace that its policy receives.
+    for (const v of Object.values(players)) if (v.slot !== p.slot && !canSee(v.slot, p)
+      && units().some(u => u.slot === v.slot && !u.dead && dist(u, p) <= range + u.radius + .5)) {
+      const data = { kind: 'bushAttack', source: p.id, bush: p.bush, x: r2(p.x), z: r2(p.z) };
+      v.socket.emit('fx', data); policyFor(v)?.observe?.({ event: 'fx', data, time: tickNumber / TICK });
+      if (trace) report({ kind: 'event', actor: v.id, event: 'fx', data });
+    }
+  };
   const attack = (a, b, dmg) => {
     fx(a, 'atk', { boosted: boosted(a, b) });
     if (a.character === 'mira' && !isRobot(a)) {

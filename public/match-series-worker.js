@@ -1,6 +1,6 @@
 'use strict';
-importScripts('/game-world.js', 'minion-objectives.js', 'minion-policy.js', 'match-series.js');
-let series = null, render = false, speed = 1, watch = 0, timer = null, last = 0, debt = 0, lastUpdate = 0, lastFrame = 0, sent = 0, token = null;
+importScripts('/game-world.js', 'minion-objectives.js', 'minion-policy.js', 'team-config.js', 'match-series.js', 'competition.js');
+let series = null, render = false, speed = 1, watch = 0, watchMember = 0, timer = null, last = 0, debt = 0, lastUpdate = 0, lastFrame = 0, sent = 0, token = null;
 function publish(force = false) {
   if (!series) return;
   const now = performance.now();
@@ -9,7 +9,7 @@ function publish(force = false) {
     sent = series.results.length; lastUpdate = now;
   }
   if (render && (force || now - lastFrame >= 50)) {
-    const frame = series.frame(watch);
+    const frame = series.frame(watch, watchMember);
     postMessage({ type: 'frame', init: token === frame.token ? null : frame.init, state: frame.state, events: frame.events });
     token = frame.token; lastFrame = now;
   }
@@ -35,8 +35,9 @@ onmessage = event => {
     if (data.type === 'start') {
       if (series) throw Error('対戦は既に開始されています。');
       render = !!data.config.render; speed = Number(data.config.speed || 1); watch = data.config.watch || 0;
+      watchMember = data.config.watchMember || 0;
       if (![1, 4, 16, 64].includes(speed) || ![0, 1].includes(watch)) throw Error('描画設定が不正です。');
-      series = new ArenaSeries.Series(data.config); last = performance.now(); publish(true); schedule(); return;
+      series = data.config.format === 'swiss' ? new ArenaCompetition.Competition(data.config) : new ArenaSeries.Series(data.config); last = performance.now(); publish(true); schedule(); return;
     }
     if (!series) return;
     if (data.type === 'pause') { series.pause(); debt = 0; }
@@ -46,6 +47,7 @@ onmessage = event => {
     if (data.type === 'view') {
       if (![1, 4, 16, 64].includes(data.speed) || ![0, 1].includes(data.watch)) throw Error('描画設定が不正です。');
       render = !!data.render; speed = data.speed; watch = data.watch; token = null; last = performance.now(); debt = 0;
+      watchMember = data.watchMember || 0;
       series.captureEvents = render; series.visualEvents = [];
     }
     publish(true); schedule();

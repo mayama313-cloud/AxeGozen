@@ -16,7 +16,7 @@
     const adapter = [ADAPTER_VERSION, ALARM_VERSION].includes(version);
     const sign = me.slot === 1 ? -1 : 1, vector = new Float32Array(adapter ? SIZE + 16 : SIZE);
     const ids = new Map([[actor, 'self']]);
-    for (const p of state.players) if (p.id !== actor) ids.set(p.id, 'opponent');
+    for (const p of state.players) if (p.id !== actor) ids.set(p.id, p.slot === me.slot ? `ally/${p.member || 0}` : state.players.length > 2 ? `opponent/${p.member || 0}` : 'opponent');
     const scene = { ...state, players: [me, ...state.players.filter(p => p.id !== actor)], control: [...(state.control || [])].sort((a, b) => (a.slot === me.slot ? 0 : 1) - (b.slot === me.slot ? 0 : 1)) };
     for (const kind of ['robots', 'projectiles', 'towers', 'monsters', 'energy']) {
       scene[kind] = [...(state[kind] || [])].sort((a, b) => (a.slot === me.slot ? 0 : 1) - (b.slot === me.slot ? 0 : 1) || sign * (a.x - b.x) || sign * (a.z - b.z));
@@ -56,7 +56,7 @@
     for (let i = 0; i < SIZE; i++) vector[i] = clip(vector[i], 8);
     if ([TACTICAL_VERSION, FARM_VERSION, DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version)) {
       const cfg = { ...init.cfg, ...(init.characters.find(c => c.id === me.character)?.stats || {}) };
-      const enemy = state.players.find(p => p.id !== actor && p.vis && !p.dead);
+      const enemy = state.players.find(p => p.slot !== me.slot && p.vis && !p.dead);
       const home = init.map.spawns[me.slot], homeD = Math.hypot(home.x - me.x, home.z - me.z);
       const enemyD = enemy ? Math.hypot(enemy.x - me.x, enemy.z - me.z) : 60;
       const enemyHp = enemy ? enemy.hp / enemy.maxHp : 0;
@@ -115,7 +115,8 @@
   function updateMemory(memory, state, actor, events = [], version = null) {
     if (memory.time > state.time) { for (const key of Object.keys(memory)) delete memory[key]; }
     memory.time = state.time; memory.lastSeen ||= {};
-    for (const p of state.players) if (p.id !== actor && p.vis) memory.lastSeen.opponent = { x: p.x, z: p.z, seenAt: state.time, character: p.character };
+    const self = state.players.find(p => p.id === actor);
+    for (const p of state.players) if (p.slot !== self?.slot && p.vis) memory.lastSeen.opponent = { x: p.x, z: p.z, seenAt: state.time, character: p.character };
     memory.cues ||= [];
     for (const e of events) memory.cues.push({ event: e.event, data: e.data, time: e.time });
     memory.cues = memory.cues.filter(e => state.time - e.time <= 3).slice(-32);
@@ -276,12 +277,12 @@
     }
     return [action];
   }
-  function controller(model, { slot = 1, seed: initialSeed = 17 } = {}) {
+  function controller(model, { slot = 1, seed: initialSeed = 17, actorId = null } = {}) {
     validate(model);
     if (![0, 1].includes(slot) || !Number.isInteger(initialSeed)) throw Error('Invalid controller slot or seed');
     const memory = {}; let lastTick = -1, cues = [], seed = initialSeed >>> 0;
     const observeState = state => {
-      const actor = state.players.find(p => p.slot === slot)?.id;
+      const actor = actorId || state.players.find(p => p.slot === slot && p.inputs)?.id || state.players.find(p => p.slot === slot)?.id;
       if (state.tick < lastTick) { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = initialSeed >>> 0; }
       lastTick = state.tick;
       updateMemory(memory, state, actor, cues, model.featureVersion); cues = [];

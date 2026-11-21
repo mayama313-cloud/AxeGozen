@@ -69,14 +69,16 @@ function validLanding(from, to, { range, radius, half, blocks, safe, travel = fa
   return [...blocks, safe].every(o => dist(to, o) + 1e-8 >= o.r + radius);
 }
 
-function createMatch(solo = false, cpu = false, { trace = null, policy = null, opponent = false, onCombat = null, controllers = null } = {}) {
+function createMatch(solo = false, cpu = false, { trace = null, policy = null, opponent = false, onCombat = null, controllers = null, teamSizes = null } = {}) {
   if (controllers && (!Array.isArray(controllers) || controllers.length !== 2 || controllers.some(c => c !== null && typeof c !== 'function'))) throw Error('controllers must contain two policies or null for algorithm');
+  if (teamSizes && (!Array.isArray(teamSizes) || teamSizes.length !== 2 || teamSizes.some(n => !Number.isInteger(n) || n < 1 || n > 5))) throw Error('Each team must have 1..5 members');
+  const multi = teamSizes && teamSizes.some(n => n > 1), expected = teamSizes ? teamSizes[0] + teamSizes[1] : solo ? 1 : 2;
   let tickNumber = 0;
   const report = data => { if (trace) trace({ tick: tickNumber, time: tickNumber / TICK, ...data }); };
   const inputEvents = new Set(['steer', 'move', 'chase', 'q', 'dash', 'c', 'leap', 'cancelLeap', 'recall']);
   let cpuSocket = null;
-  const policyFor = p => p && (controllers ? controllers[p.slot] : p.socket === cpuSocket ? policy : null);
-  const isAlgorithm = p => !!p && (controllers ? !!p.socket && !policyFor(p) : (p.socket === cpuSocket && !policy) || (opponent && p.slot === 0 && !!p.socket));
+  const policyFor = p => p && (p.bot ? p.controller : controllers ? controllers[p.slot] : p.socket === cpuSocket ? policy : null);
+  const isAlgorithm = p => !!p && (p.bot ? !policyFor(p) : controllers ? !!p.socket && !policyFor(p) : (p.socket === cpuSocket && !policy) || (opponent && p.slot === 0 && !!p.socket));
   const command = (p, event, data) => p.commands?.[event]?.(data);
   const players = {}, robots = {}, towers = {}, projectiles = {}, monsters = {}, energy = {};
   const environment = { enabled: true, totals: [0, 0] };
@@ -279,12 +281,16 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     releaseHold(p); p.radius = p.cfg.radius;
     p.cpuMemory = null;
     Object.assign(p, SPAWNS[p.slot], { hp: p.cfg.maxHp, dest: null, target: null, dead: false, dashT: 0, moving: false, respawn: 0, stun: 0, recall: 0, keys: null, inputT: 0, shield: 0, aiming: false, leap: null, air: 0, speedBoost: 0, pull: null, stealth: 0, warp: null, charge: null, grabbing: null, held: null, flight: null, retreating: false, thinkTime: 0, path: [], pathTarget: null, pathGoal: null, pathAge: 0 });
+    if (teamSizes) {
+      const offset = [[0, 0], [-2.2, 0], [2.2, 0], [0, -2.2], [0, 2.2]][p.member || 0], sign = p.slot ? -1 : 1;
+      p.x += offset[0] * sign; p.z += offset[1] * sign;
+    }
     p.face = ang(p, { x: 0, z: 0 });
     updateBush(p);
   }
   function reset() {
     report({ kind: 'reset' });
-    for (const control of new Set(controllers || [policy])) control?.reset?.();
+    for (const control of new Set([...(controllers || [policy]), ...Object.values(players).map(p => p.controller)])) control?.reset?.();
     tickNumber = 0;
     winner = null; elapsed = 0; energyTimer = 0; environment.totals = [0, 0];
     for (const collection of [monsters, energy]) for (const id of Object.keys(collection)) delete collection[id];
@@ -574,10 +580,22 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     fx(p, 'warpHit', { range: p.cfg.leapHitRange });
     for (const e of targets()) if (damageable(p, e) && dist(p, e) <= p.cfg.leapHitRange + e.radius) hit(p, e, p.cfg.warpDmg);
   }
-  function connect(socket) {
-    const slot = [0, 1].find(s => !Object.values(players).some(p => p.slot === s));
-    if (slot === undefined) { socket.emit('full'); socket.disconnect(); return false; }
-    const p = players[socket.id] = { id: socket.id, socket, commands: {}, slot, radius: CFG.radius, kills: 0, atkCd: 0, qCd: 0, eCd: 0, cCd: 0, character: null, confirmed: false, cfg: configFor('alex') };
+  function maybeStart() {
+    if (phase === 'selecting' && Object.keys(players).length === expected && Object.values(players).every(p => p.confirmed && p.character)) {
+      reset(); phase = 'playing'; recordFrame();
+    }
+  }
+  function connect(socket, seat = {}) {
+    if (players[socket.id]) return false;
+    if (active() || phase === 'finished' || Object.keys(players).length >= expected) { socket.emit('full'); socket.disconnect(); return false; }
+    const slot = teamSizes ? (seat.team ?? [0, 1].find(s => Object.values(players).filter(p => p.slot === s).length < teamSizes[s]))
+      : [0, 1].find(s => !Object.values(players).some(p => p.slot === s));
+    const member = teamSizes && [0, 1].includes(slot) ? (seat.member ?? Array.from({ length: teamSizes[slot] }, (_, i) => i).find(i => !Object.values(players).some(p => p.slot === slot && p.member === i))) : 0;
+    if (![0, 1].includes(slot) || (teamSizes && (!Number.isInteger(member) || member < 0 || member >= teamSizes[slot]
+      || Object.values(players).some(p => p.slot === slot && p.member === member)))) { socket.emit('full'); socket.disconnect(); return false; }
+    const p = players[socket.id] = { id: socket.id, socket, commands: {}, slot, member, bot: !!seat.bot, controller: seat.controller || null,
+      name: String(seat.name || '').slice(0, 60), radius: CFG.radius, kills: 0, atkCd: 0, qCd: 0, eCd: 0, cCd: 0,
+      character: seat.bot ? seat.character || 'alex' : null, confirmed: !!seat.bot, cfg: configFor(seat.bot ? seat.character : 'alex') };
     const listen = (event, fn) => {
       const receive = data => {
       const wasActive = active();
@@ -588,8 +606,9 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
       p.commands[event] = receive; socket.on(event, receive);
     };
     spawn(p);
-    if (solo || Object.keys(players).length === 2) phase = 'selecting';
+    if (Object.keys(players).length === expected) phase = 'selecting';
     const init = { id: p.id, slot, cfg: CFG, map: MAP, solo, cpu, characters: CHARACTERS, rulesVersion: 'minion-v1-collection-1' };
+    if (teamSizes) Object.assign(init, { member, teamSizes: [...teamSizes] });
     socket.emit('init', init);
     report({ kind: 'init', actor: p.id, source: isAlgorithm(p) ? 'algorithm' : policyFor(p) ? 'model' : 'human', data: init });
     listen('selectCharacter', d => {
@@ -607,9 +626,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     listen('confirmCharacter', () => {
       if (phase !== 'selecting' || !p.character) return;
       p.confirmed = true;
-      if ((solo || Object.keys(players).length === 2) && Object.values(players).every(p => p.confirmed)) {
-        reset(); phase = 'playing'; recordFrame();
-      }
+      maybeStart();
     });
     const ready = () => active() && !p.dead && p.stun <= 0 && !p.leap && !p.warp && !p.charge && !p.grabbing && !p.held && !p.flight;
     listen('cancelLeap', () => { p.aiming = false; });
@@ -709,12 +726,18 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     });
     listen('restart', () => { if ((solo || cpu) && (active() || phase === 'finished')) { reset(); phase = 'playing'; recordFrame(); } });
     listen('disconnect', () => {
+      if (teamSizes) {
+        p.bot = true; p.controller = null; p.confirmed = true; p.character ||= 'alex';
+        p.cfg = configFor(p.character); p.cpuFarmed ||= new Set();
+        for (const v of Object.values(players)) if (!v.bot) v.socket.emit('teamMemberLeft', { id: p.id, slot: p.slot, member: p.member });
+        maybeStart(); return;
+      }
       releaseHold(p);
       delete players[p.id];
       phase = 'abandoned';
       for (const v of Object.values(players)) v.socket.emit('matchEnded', { reason: '対戦相手が退出しました。ロビーからもう一度参加してください。' });
     });
-    if (cpu && !cpuSocket) {
+    if (cpu && !cpuSocket && !teamSizes) {
       const handlers = new Map();
       cpuSocket = { id: 'cpu-player', on(event, fn) { handlers.set(event, fn); }, emit() {},
         send(event, data) { handlers.get(event)?.(data); }, disconnect() {} };
@@ -722,7 +745,14 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
       cpuSocket.send('selectCharacter', { id: 'alex' });
       cpuSocket.send('confirmCharacter');
     }
+    maybeStart();
     return true;
+  }
+  function addBot({ team, member, character = 'alex', controller = null, id = `team-cpu-${team}-${member}`, name = '' }) {
+    if (!teamSizes || !characterFor(character) || (controller !== null && typeof controller !== 'function')) throw Error('Invalid CPU member');
+    const handlers = {};
+    const socket = { id, on(event, fn) { handlers[event] = fn; }, emit() {}, disconnect() {} };
+    return connect(socket, { team, member, character, controller, name, bot: true });
   }
   function cpuShotClear(p, foe) {
     const blocks = [...OBST, ...Object.values(towers).filter(t => !t.dead && t !== foe).map(t => ({ ...t, r: t.radius })),
@@ -759,7 +789,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   const cpuFarming = p => environment.enabled && cpuCamps(p).some(c => !p.cpuFarmed.has(c.id));
   function observeCpu(p) {
     if (p.dead) { p.cpuMemory = null; return; }
-    const seen = Object.values(players).filter(e => e !== p && !e.dead && canSee(p.slot, e) && dist(p, e) <= 12)
+    const seen = Object.values(players).filter(e => e !== p && e.slot !== p.slot && !e.dead && canSee(p.slot, e) && dist(p, e) <= 12)
       .sort((a, b) => dist(p, a) - dist(p, b))[0];
     if (seen) {
       p.cpuMemory = { id: seen.id, x: seen.x, z: seen.z, seenAt: elapsed, search: null };
@@ -1008,7 +1038,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     }
     const list = Object.values(players);
     for (const v of list) {
-      if (v.socket === cpuSocket || controllers) continue;
+      if (v.bot || v.socket === cpuSocket || controllers) continue;
       v.socket.emit('state', view(v));
     }
     if (trace && advanced) recordFrame();
@@ -1019,7 +1049,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   function view(v) {
     const list = Object.values(players);
     return {
-        solo, cpu, winner, phase, tick: tickNumber, time: tickNumber / TICK,
+        solo, cpu, winner, phase, tick: tickNumber, time: tickNumber / TICK, ...(multi ? { teamSizes: [...teamSizes] } : {}),
         control: [0, 1].map(slot => ({ slot, boundary: boundary(slot), energy: environment.totals[slot] })),
         energy: Object.values(energy),
         monsters: Object.values(monsters).filter(m => canSee(v.slot, m)).map(m => ({ id: m.id, slot: 2, large: m.large, x: r2(m.x), z: r2(m.z), hp: r2(m.hp), maxHp: m.maxHp, face: m.face, moving: m.moving, stun: m.stun, air: r2(m.air || 0) })),
@@ -1027,6 +1057,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
         players: list.map(p => {
           const vis = canSee(v.slot, p);
           const s = { id: p.id, slot: p.slot, character: p.character, confirmed: p.confirmed, maxHp: p.cfg.maxHp, hp: r2(p.hp), dead: p.dead, kills: p.kills, energy: p.energy, vis, stun: r2(p.stun), recall: r2(p.recall), shield: r2(p.shield) };
+          if (multi) Object.assign(s, { member: p.member, name: p.name, bot: p.bot });
           if (vis) Object.assign(s, { x: r2(p.x), z: r2(p.z), face: r2(p.face), moving: active() && p.moving, air: r2(p.air), speedBoost: r2(p.speedBoost), stealth: r2(p.stealth), warping: p.warp ? r2(p.warp.remaining) : 0, charging: !!p.charge, grabbing: !!p.grabbing, grabbed: !!p.held, flying: !!p.flight, radius: p.radius });
           if (p === v) Object.assign(s, { aiming: p.aiming, qCd: r2(p.qCd), eCd: r2(p.eCd), cCd: r2(p.cCd), respawn: r2(Math.max(0, p.respawn)), safe: !p.dead && protectedUnit(p), respawnTime: CFG.respawn + destroyed(p.slot) * CFG.respawnPerTower,
             inputs: { keys: p.keys && { ...p.keys }, dest: p.dest && { x: p.dest.x, z: p.dest.z }, target: p.target } });
@@ -1037,9 +1068,9 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
       };
   }
   // サーバー内部の状態。Socket.IOのイベントからは直接変更できない。
-  return { connect, tick, observe: id => players[id] ? view(players[id]) : null,
+  return { connect, addBot, tick, observe: id => players[id] ? view(players[id]) : null,
     input: (id, event, data) => { if (inputEvents.has(event) && players[id]) command(players[id], event, data); },
-    empty: () => Object.keys(players).length === 0, state: { players, robots, towers, projectiles, monsters, energy, environment, camps } };
+    empty: () => teamSizes ? Object.values(players).every(p => p.bot) : Object.keys(players).length === 0, state: { players, robots, towers, projectiles, monsters, energy, environment, camps } };
 }
 
 const ArenaWorld = { createMatch, CFG, MAP, TICK, CHARACTERS, characterFor, configFor, validLanding };

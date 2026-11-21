@@ -1,10 +1,13 @@
 const { createMatch } = require('./game-world');
+const { createTeamRooms } = require('./team-rooms');
 
 function createMatchmaker() {
   const queue = [], members = new Set(), matches = new Set();
+  const rooms = createTeamRooms({ busy: id => members.has(id), onMatch: match => matches.add(match) });
   function attach(socket) {
+    rooms.attach(socket);
     socket.on('joinQueue', () => {
-      if (members.has(socket.id)) return;
+      if (members.has(socket.id) || rooms.has(socket.id)) return;
       members.add(socket.id);
       queue.push(socket);
       socket.emit('queued');

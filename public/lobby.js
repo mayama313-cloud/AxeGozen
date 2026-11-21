@@ -1,12 +1,12 @@
 (() => {
   const el = id => document.getElementById(id), session = window.gameSession;
-  let selfId = null, model = null, useModel = false, activeScreen = null;
+  let selfId = null, model = null, useModel = false, activeScreen = null, teamMatch = false, playing = false;
   function screen(name) {
     if (activeScreen !== name) el('lobby').scrollTop = 0;
     activeScreen = name;
     el('lobby').hidden = name === 'game';
     el('hud').hidden = name !== 'game';
-    for (const id of ['lobbyHome', 'matchmaking', 'characterSelect', 'seriesPanel']) if (el(id)) el(id).hidden = id !== name;
+    for (const id of ['lobbyHome', 'matchmaking', 'characterSelect', 'seriesPanel', 'teamRoomPanel']) if (el(id)) el(id).hidden = id !== name;
   }
   function renderCards(characters) {
     el('characterCards').replaceChildren();
@@ -37,15 +37,19 @@
   });
   el('startMatch').addEventListener('click', () => {
     const mode = document.querySelector('input[name="mode"]:checked').value;
-    if (mode === 'series') { session.openSeries(); return; }
-    useModel = mode === 'cpu' && el('cpuController').value === 'model' && !!model;
-    session.start(mode, { model: useModel ? model : null });
+    if (mode === 'series' || mode === 'competition') { session.openSeries({ format: mode === 'competition' ? 'swiss' : 'series' }); return; }
+    try {
+      const teams = window.teamSetup?.getConfig() || null;
+      useModel = !teams && mode === 'cpu' && el('cpuController').value === 'model' && !!model;
+      session.start(mode, { model: useModel ? model : null, teams });
+    }
+    catch (error) { if (el('teamSetupStatus')) el('teamSetupStatus').textContent = error.message; return; }
     if (useModel) session.emit('selectCpuCharacter', { id: model.characters[0] });
   });
   for (const id of ['cancelMatch', 'leaveSelection', 'returnLobby']) el(id).addEventListener('click', () => session.stop());
   el('confirmCharacter').addEventListener('click', () => session.emit('confirmCharacter'));
   el('cpuCharacter').addEventListener('change', () => session.emit('selectCpuCharacter', { id: el('cpuCharacter').value }));
-  session.on('lobby', () => { selfId = null; screen('lobbyHome'); });
+  session.on('lobby', () => { selfId = null; playing = false; screen('lobbyHome'); });
   session.on('starting', ({ mode }) => {
     screen('matchmaking');
     el('matchingTitle').textContent = mode === 'online' ? '対戦相手を探しています…' : mode === 'cpu' ? 'CPU戦を準備しています…' : '練習試合を準備しています…';
@@ -54,9 +58,11 @@
   });
   session.on('seriesSetup', () => { screen('seriesPanel'); el('restart').hidden = true; });
   session.on('seriesView', ({ render }) => screen(render ? 'game' : 'seriesPanel'));
+  session.on('teamRoom', room => { if (room.phase === 'waiting') screen('teamRoomPanel'); });
+  session.on('teamRoomError', () => { if (!playing) screen('teamRoomPanel'); });
   session.on('init', data => {
-    selfId = data.id; renderCards(data.characters);
-    el('cpuCharacterPicker').hidden = !data.cpu;
+    selfId = data.id; teamMatch = !!data.teamSizes; renderCards(data.characters);
+    el('cpuCharacterPicker').hidden = !data.cpu || teamMatch;
     el('cpuCharacter').replaceChildren();
     for (const character of data.characters) {
       if (useModel && !model.characters.includes(character.id)) continue;
@@ -67,10 +73,11 @@
   });
   session.on('state', state => {
     if (session.mode === 'series') return;
+    playing = state.phase === 'playing' || state.phase === 'finished';
     if (state.phase === 'playing' || state.phase === 'finished') { screen('game'); return; }
     if (state.phase !== 'selecting') return;
     screen('characterSelect');
-    const me = state.players.find(p => p.id === selfId), opponent = state.players.find(p => p.id !== selfId);
+    const me = state.players.find(p => p.id === selfId), opponent = state.players.find(p => p.slot !== me?.slot);
     if (!me) return;
     if (state.cpu) {
       el('cpuCharacter').value = opponent?.character || 'alex';
@@ -85,7 +92,8 @@
     el('confirmCharacter').disabled = !me.character || me.confirmed;
     el('confirmCharacter').textContent = me.confirmed ? '相手の準備を待っています…' : state.solo || state.cpu ? 'このキャラで試合開始' : '選択を確定・準備完了';
     el('selectionStatus').textContent = me.confirmed ? '準備完了。双方が確定すると試合が始まります。' : 'Q・E・Cとパッシブを確認して、出撃するキャラを選んでください。';
-    el('opponentSelection').textContent = state.solo ? 'オフライン：1人用タワー攻略' : `${state.cpu ? useModel ? 'ミニオン v1' : 'CPU' : '相手'}：${ArenaWorld.characterFor(opponent?.character)?.name || '選択中'}${opponent?.confirmed ? '（準備完了）' : ''}`;
+    el('opponentSelection').textContent = teamMatch ? [0, 1].map(t => `${t ? 'B' : 'A'}チーム：${state.players.filter(p => p.slot === t).map(p => ArenaWorld.characterFor(p.character)?.name || '選択中').join('・')}`).join(' / ')
+      : state.solo ? 'オフライン：1人用タワー攻略' : `${state.cpu ? useModel ? 'ミニオン v1' : 'CPU' : '相手'}：${ArenaWorld.characterFor(opponent?.character)?.name || '選択中'}${opponent?.confirmed ? '（準備完了）' : ''}`;
   });
   function failure(message) { screen('matchmaking'); el('matchingTitle').textContent = '試合を続けられません'; el('matchingMessage').textContent = message; }
   session.on('matchEnded', data => failure(data.reason));

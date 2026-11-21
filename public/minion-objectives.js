@@ -34,7 +34,7 @@
   function candidates(model, state, actor, memory, history = {}) {
     const me = state.players.find(p => p.id === actor), cfg = config(model, me);
     const own = state.control.find(c => c.slot === me.slot), ownZone = e => (me.slot === 1 ? e.z - e.x : e.x - e.z) < own.boundary;
-    const enemies = [...state.players.filter(p => p.id !== actor && p.vis && !p.dead), ...state.robots.filter(r => r.slot !== me.slot)].filter(e => Number.isFinite(e.x));
+    const enemies = [...state.players.filter(p => p.slot !== me.slot && p.vis && !p.dead), ...state.robots.filter(r => r.slot !== me.slot)].filter(e => Number.isFinite(e.x));
     const enemyDistance = enemies.length ? Math.min(...enemies.map(e => distance(me, e))) : 60;
     const alarm = Object.values(history.towers || {}).some(t => state.time - t.hitAt <= 3);
     const goals = [{ kind: 'base', id: 'base', x: me.x, z: me.z }];

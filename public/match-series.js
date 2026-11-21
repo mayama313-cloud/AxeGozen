@@ -2,11 +2,13 @@
   'use strict';
   const World = root.ArenaWorld || require('../game-world');
   const Policy = root.MinionPolicy || require('./minion-policy');
+  const Teams = root.ArenaTeams || require('./team-config');
   const VERSION = 'axegozen-match-series/1';
   function validate(config) {
     if (!Number.isInteger(config.firstTo) || config.firstTo < 1 || config.firstTo > 1000) throw Error('先取本数は1〜1000で指定してください。');
     if (!Number.isInteger(config.seed) || config.seed < 0 || config.seed > 4294967295) throw Error('乱数シードは0〜4294967295の整数で指定してください。');
     if (!Number.isFinite(config.timeLimitSeconds) || config.timeLimitSeconds < 0 || config.timeLimitSeconds > 86400) throw Error('試合時間上限が不正です。0は無制限です。');
+    if (config.teams) { Teams.normalize(config.teams, { humans: false }); return config; }
     if (!Array.isArray(config.entries) || config.entries.length !== 2) throw Error('両陣営を指定してください。');
     for (const entry of config.entries) {
       if (!['algorithm', 'model'].includes(entry.kind) || !World.characterFor(entry.character)) throw Error('操作主体またはキャラクターが不正です。');
@@ -28,7 +30,9 @@
   class Series {
     constructor(config) {
       this.config = validate({ seed: 17, timeLimitSeconds: 0, alternateSides: true, ...config });
-      this.entries = this.config.entries.map(describe);
+      this.teams = Teams.normalize(this.config.teams || this.config.entries.map(e => [e]), { humans: false });
+      this.entries = this.teams.map((team, index) => ({ ...(team.length === 1 ? describe(team[0], index) : { entry: index, label: index === 0 ? 'Aチーム' : 'Bチーム', kind: 'team', characterName: team.map(m => World.characterFor(m.character).name).join('・') }),
+        label: this.config.teamLabels?.[index] || this.config.entries?.[index]?.label || (index === 0 ? 'Aチーム' : 'Bチーム'), members: team.map(Teams.describe) }));
       this.results = []; this.wins = [0, 0]; this.draws = 0; this.status = 'running'; this.champion = null;
       this.startedAt = new Date().toISOString(); this.endedAt = null;
       this.captureEvents = !!this.config.render; this.visualEvents = [];
@@ -38,33 +42,31 @@
       const number = this.results.length + 1;
       const entryBySlot = this.config.alternateSides && number % 2 === 0 ? [1, 0] : [0, 1];
       const seeds = [0, 1].map(i => (this.config.seed + Math.imul(number, 997) + Math.imul(i + 1, 104729)) >>> 0);
-      const controllers = entryBySlot.map((entry, slot) => this.config.entries[entry].kind === 'model'
-        ? Policy.controller({ ...this.config.entries[entry].model, init: { ...this.config.entries[entry].model.init,
-          cfg: World.CFG, map: World.MAP, characters: World.CHARACTERS } }, { slot, seed: seeds[entry] }) : null);
-      this.current = { number, entryBySlot, seeds, ticks: 0, inits: [] };
+      this.current = { number, entryBySlot, seeds, ticks: 0, inits: [], memberInits: [[], []] };
       this.visualEvents = [];
-      this.match = World.createMatch(false, false, { controllers });
-      const sockets = [0, 1].map(slot => {
+      this.match = World.createMatch(false, false, { teamSizes: entryBySlot.map(entry => this.teams[entry].length) });
+      for (let slot = 0; slot < 2; slot++) this.teams[entryBySlot[slot]].forEach((member, index) => {
+        const id = `series-slot-${slot}${index ? '-' + index : ''}`;
+        const controller = Teams.controller(member, slot, id, (seeds[entryBySlot[slot]] + index * 7919) >>> 0);
         const handlers = {};
-        this.match.connect({ id: `series-slot-${slot}`, on(e, fn) { handlers[e] = fn; },
+        this.match.connect({ id, on(e, fn) { handlers[e] = fn; },
           emit: (e, data) => {
-            if (e === 'init') this.current.inits[slot] = data;
-            else if (this.captureEvents && ['fx', 'hit', 'heal', 'kill'].includes(e)) {
+            if (e === 'init') { this.current.memberInits[slot][index] = data; if (!index) this.current.inits[slot] = data; }
+            else if (!index && this.captureEvents && ['fx', 'hit', 'heal', 'kill'].includes(e)) {
               this.visualEvents.push({ slot, event: e, data });
               if (this.visualEvents.length > 512) this.visualEvents.shift();
             }
-          }, disconnect() {} });
-        return handlers;
+          }, disconnect() {} }, { team: slot, member: index, bot: true, controller, character: member.character, name: member.label });
       });
-      sockets.forEach((handlers, slot) => handlers.selectCharacter({ id: this.config.entries[entryBySlot[slot]].character }));
-      sockets.forEach(handlers => handlers.confirmCharacter());
     }
     currentStats() {
-      const totals = [null, null];
+      const totals = [0, 1].map(() => ({ hp: 0, maxHp: 0, kills: 0, energy: 0, members: [] }));
       for (const player of Object.values(this.match.state.players)) {
         const entry = this.current.entryBySlot[player.slot];
-        totals[entry] = { slot: player.slot, hp: player.hp, maxHp: player.cfg.maxHp, kills: player.kills, energy: player.energy,
-          towers: Object.values(this.match.state.towers).filter(t => t.slot === player.slot && !t.dead).length };
+        const total = totals[entry]; total.slot = player.slot;
+        for (const key of ['hp', 'kills', 'energy']) total[key] += player[key]; total.maxHp += player.cfg.maxHp;
+        total.towers = Object.values(this.match.state.towers).filter(t => t.slot === player.slot && !t.dead).length;
+        total.members.push({ member: player.member || 0, character: player.character, hp: player.hp, maxHp: player.cfg.maxHp, kills: player.kills, energy: player.energy });
       }
       return totals;
     }
@@ -101,11 +103,12 @@
         winRates: this.wins.map(w => decided ? w / decided : null), champion: this.champion,
         current: { number: this.current.number, seconds: this.current.ticks / World.TICK, entryBySlot: [...this.current.entryBySlot], stats: this.currentStats() } };
     }
-    frame(entry = 0) {
+    frame(entry = 0, member = 0) {
       if (![0, 1].includes(entry)) throw Error('Invalid spectator entry');
       const slot = this.current.entryBySlot.indexOf(entry);
+      if (!Number.isInteger(member) || member < 0 || member >= this.teams[entry].length) member = 0;
       const events = this.visualEvents.filter(e => e.slot === slot); this.visualEvents = [];
-      return { token: `${this.current.number}:${entry}`, init: this.current.inits[slot], state: this.match.observe(`series-slot-${slot}`), events };
+      return { token: `${this.current.number}:${entry}:${member}`, init: this.current.memberInits[slot][member], state: this.match.observe(`series-slot-${slot}${member ? '-' + member : ''}`), events };
     }
     report() {
       return { ...this.summary(), rulesVersion: 'minion-v1-collection-1', game: { cfg: World.CFG, map: World.MAP, characters: World.CHARACTERS },

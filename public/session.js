@@ -30,7 +30,7 @@
       if (network) { network.removeAllListeners(); network.disconnect(); network = null; }
       dispatch('lobby');
     },
-    openSeries() { session.stop(); session.mode = 'series'; dispatch('seriesSetup'); },
+    openSeries(options = {}) { session.stop(); session.mode = 'series'; dispatch('seriesSetup', options); },
     startSeries(config) {
       session.stop(); session.mode = 'series'; running = true; seriesRendering = !!config.render;
       if (typeof Worker !== 'function') { dispatch('seriesSetup'); dispatch('seriesError', 'このブラウザーではWeb Workerを利用できません。'); return; }
@@ -55,19 +55,26 @@
       dispatch('seriesSetup', { starting: true }); worker.postMessage({ type: 'start', config });
     },
     seriesCommand(type) { seriesWorker?.postMessage({ type }); },
-    seriesView({ render, speed, watch }) {
+    seriesView({ render, speed, watch, watchMember = 0 }) {
       seriesRendering = !!render;
-      seriesWorker?.postMessage({ type: 'view', render: seriesRendering, speed, watch });
+      seriesWorker?.postMessage({ type: 'view', render: seriesRendering, speed, watch, watchMember });
       dispatch('seriesView', { render: seriesRendering && !!seriesWorker });
     },
-    start(mode, { model = null } = {}) {
+    roomCommand(event, data) {
+      network?.emit(event, data, result => { if (result && !result.ok) dispatch('teamRoomError', result.error); });
+    },
+    joinTeamRoom(code, team = 1) { session.start('online', { joinRoom: { code, team } }); },
+    start(mode, { model = null, teams = null, joinRoom = null } = {}) {
       session.stop(); running = true; session.mode = mode;
       window.trainingRecorder?.newSession();
       dispatch('starting', { mode });
       if (mode === 'offline' || mode === 'cpu') {
+        const roster = teams ? ArenaTeams.normalize(teams) : null;
+        if (roster && (roster[0][0].kind !== 'human' || roster.some((t, ti) => t.some((m, i) => m.kind === 'human' && (ti !== 0 || i !== 0))))) throw Error('ローカルの人間プレイヤーはAチームの1人目だけです。');
         const listeners = new Map(), match = ArenaWorld.createMatch(mode === 'offline', mode === 'cpu', {
           trace: window.trainingRecorder?.enabled ? entry => window.trainingRecorder.consume(entry) : null,
           policy: mode === 'cpu' && model ? window.MinionPolicy.controller(model) : null,
+          teamSizes: roster ? roster.map(t => t.length) : null,
         });
         local = {
           id: 'offline-player',
@@ -75,13 +82,38 @@
           emit: dispatch,
           receive(event, data) { listeners.get(event)?.(data); },
         };
-        match.connect(local); match.tick();
+        match.connect(local, roster ? { team: 0, member: 0, name: roster[0][0].label } : {});
+        if (roster) {
+          roster.forEach((team, t) => team.forEach((m, i) => {
+            if (t === 0 && i === 0) return;
+            const id = `team-cpu-${t}-${i}`;
+            match.addBot({ team: t, member: i, id, character: m.character, name: m.label, controller: ArenaTeams.controller(m, t, id, 17 + t * 997 + i * 7919) });
+          }));
+          local.receive('selectCharacter', { id: roster[0][0].character });
+        }
+        match.tick();
         timer = setInterval(() => match.tick(), 1000 / ArenaWorld.TICK);
       } else {
         if (typeof io !== 'function') { dispatch('connect_error'); return; }
         network = io({ autoConnect: false, reconnection: false });
         network.onAny(dispatch);
-        network.on('connect', () => { if (running) network.emit('joinQueue'); });
+        network.on('connect', () => {
+          if (!running) return;
+          if (joinRoom) { session.roomCommand('joinTeamRoom', joinRoom); return; }
+          if (!teams) { network.emit('joinQueue'); return; }
+          const roster = ArenaTeams.normalize(teams), descriptors = roster.map(team => team.map(m => ({ ...m, model: null })));
+          dispatch('teamModelsUploading', roster.some(team => team.some(m => m.kind === 'model')));
+          network.emit('createTeamRoom', { teams: descriptors }, async result => {
+            if (!result?.ok) { dispatch('teamModelsUploading', false); dispatch('teamRoomError', result?.error || '部屋を作成できませんでした。'); return; }
+            const connection = network;
+            for (let t = 0; t < 2; t++) for (let i = 0; i < roster[t].length; i++) {
+              const m = roster[t][i]; if (m.kind !== 'model' || network !== connection || !connection.connected) continue;
+              const uploaded = await new Promise(resolve => connection.emit('setTeamModel', { team: t, member: i, model: m.model, character: m.character, fileName: m.fileName }, resolve));
+              if (!uploaded?.ok) { dispatch('teamModelsUploading', false); dispatch('teamRoomError', uploaded?.error || 'CPUモデルを送信できませんでした。'); return; }
+            }
+            dispatch('teamModelsUploading', false);
+          });
+        });
         network.on('connect_error', () => dispatch('connect_error'));
         network.on('disconnect', reason => dispatch('disconnect', reason));
         network.connect();

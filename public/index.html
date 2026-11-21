@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Arena 1v1</title>
+<title>Axe Gozen / Arena</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #10161a; color: #eef3f6; font-family: system-ui, "Hiragino Sans", "Yu Gothic", sans-serif; }
   #gameCanvas { display: block; width: 100%; height: 100%; touch-action: none; }
@@ -127,16 +127,33 @@
 </details>
 <main id="lobby">
   <section id="lobbyHome" class="lobby-panel">
-    <div class="eyebrow">AXE GOZEN / 1 vs 1</div>
+    <div class="eyebrow">AXE GOZEN / TEAM ARENA</div>
     <h1>戦場へ、準備を。</h1>
     <p>モードを選んで試合開始。キャラクターを決めたら、敵陣のタワー5本を攻略しよう。</p>
     <div class="mode-list">
-      <label class="mode-option"><input type="radio" name="mode" value="cpu"><strong>CPU対戦</strong><p>好きなキャラのCPUと1対1。敵タワー5本を先に破壊すると勝利。通信なしで遊べます。</p></label>
+      <label class="mode-option"><input type="radio" name="mode" value="cpu"><strong>CPU対戦</strong><p>好きなキャラのCPUと対戦。チーム編成で味方・敵CPUを追加できます。敵タワー5本を先に破壊すると勝利。</p></label>
       <label class="mode-option"><input type="radio" name="mode" value="offline" checked><strong>オフライン</strong><p>1人用のタワー攻略練習。対戦通信なしで操作やスキルを試せます。</p></label>
-      <label class="mode-option"><input type="radio" name="mode" value="online"><strong>オンライン</strong><p>参加中のプレイヤーと1対1でマッチング。2人が準備できたら開戦します。</p></label>
+      <label class="mode-option"><input type="radio" name="mode" value="online"><strong>オンライン</strong><p>1対1のマッチング、またはチームの部屋で対戦。部屋では人間とCPUを混ぜて編成できます。</p></label>
       <label class="mode-option"><input type="radio" name="mode" value="series"><strong>自動対戦・勝率計測</strong><p>モデルやアルゴリズムを対戦させ、指定した本数を先取するまで勝敗を集計。高速処理と観戦を選べます。</p></label>
+      <label class="mode-option"><input type="radio" name="mode" value="competition"><strong>コンペティション</strong><p>シリーズ戦・スイスステージを開催。チームを登録して、組み合わせと順位を自動で集計します。</p></label>
     </div>
     <button id="startMatch" type="button" class="primary">試合開始</button>
+    <details id="teamSetupDetails" class="team-setup"><summary>チーム編成・オンラインの部屋（各1〜5人）</summary>
+      <label class="series-check"><input id="useTeamSetup" type="checkbox">チーム編成を使う</label>
+      <div id="teamSetupBody" hidden>
+        <p>人数は左右別々に指定できます。自分以外のメンバーにCPUを追加できます。オンラインでは人間用の席も作れます。</p>
+        <div class="series-entries team-columns">
+          <section class="series-entry"><h3>Aチーム（自分側）</h3><label>人数<select id="teamSize0"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label><div id="teamMembers0"></div></section>
+          <section class="series-entry" data-entry="1"><h3>Bチーム</h3><label>人数<select id="teamSize1"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label><div id="teamMembers1"></div></section>
+        </div>
+        <p class="series-note">CPUは各メンバー欄の操作主体・キャラクターで動きます。人数をそろえる必要はありません。</p>
+        <div id="teamOnlineTools" hidden><p>「試合開始」でこの編成の部屋を作成します。人間用の空席へ、部屋コードで参加できます。オンラインのCPUモデルはサーバーへ送信されます。</p>
+          <label>部屋コード<input id="joinTeamCode" maxlength="6" autocomplete="off" placeholder="例：A1B2C3"></label>
+          <label>参加チーム<select id="joinTeamSide"><option value="1">Bチーム</option><option value="0">Aチーム</option></select></label><button id="joinTeamRoom" type="button">部屋に参加</button>
+        </div>
+        <p id="teamSetupStatus" role="status"></p>
+      </div>
+    </details>
     <p><label>CPUの操作 <select id="cpuController"><option value="algorithm">アルゴリズム</option><option value="model" disabled>ミニオン v1（モデルを読み込んでください）</option></select></label>
     <label>学習モデルを読み込む <input id="importMinionModel" type="file" accept=".json,application/json"></label><br><span id="minionModelStatus" role="status"></span></p>
     <p><label><input id="recordTraining" type="checkbox" checked> ミニオン v1 の教師データを記録（CPU戦・オフライン）</label><br><small>終了時にこのブラウザーへ保存します。1試合20分まで。学習に使う区間は後で選択できます。</small></p>
@@ -154,25 +171,37 @@
     <div id="characterCards"></div>
     <div class="lobby-actions"><button id="confirmCharacter" type="button" class="primary" disabled>選択を確定・準備完了</button><button id="leaveSelection" type="button">ロビーに戻る</button><span id="opponentSelection"></span></div>
   </section>
+  <section id="teamRoomPanel" class="lobby-panel" hidden>
+    <div class="eyebrow">TEAM ROOM</div><h2>チームの部屋 <span id="teamRoomCodeText">—</span></h2>
+    <p id="teamRoomStatus">部屋を準備しています。</p><p id="teamRoomError" role="status"></p>
+    <div class="team-columns"><section class="series-entry"><h3>Aチーム</h3><div id="teamRoomMembers0"></div><div id="teamRoomAdd0" class="series-toolbar"></div></section>
+      <section class="series-entry" data-entry="1"><h3>Bチーム</h3><div id="teamRoomMembers1"></div><div id="teamRoomAdd1" class="series-toolbar"></div></section></div>
+    <div class="series-toolbar"><label>自分のキャラ<select id="teamRoomCharacter"></select></label><button id="teamRoomReady" class="primary" disabled>準備完了</button>
+      <label>移動先<select id="teamRoomSide"><option value="0">Aチーム</option><option value="1">Bチーム</option></select></label><button id="teamRoomMove">チームを移動</button><button id="leaveTeamRoom">ロビーへ</button></div>
+    <p>全ての人間が席に入り、準備完了すると試合開始。ホストは空席やCPUの編成を変更できます。編成変更後はもう一度準備完了してください。</p>
+  </section>
   <section id="seriesPanel" class="lobby-panel" hidden>
-    <div class="eyebrow">AUTO MATCH / FIRST TO</div><h2>自動対戦・勝率計測</h2>
-    <p>両陣営を指定し、タワー5本を破壊して決着するまで対戦します。標準では試合時間は無制限です。</p>
+    <div class="eyebrow">COMPETITION</div><h2>コンペティション・自動対戦</h2>
+    <p>シリーズ戦、または複数チームのスイスステージを開催できます。タワー5本を破壊すると1試合の勝利です。</p>
     <fieldset id="seriesSettings">
       <legend>対戦設定</legend>
-      <div class="series-entries">
-        <section class="series-entry" data-entry="0"><h3>A陣営</h3>
+      <label>大会形式<select id="competitionFormat"><option value="series">シリーズ（2チームの先取戦）</option><option value="swiss">スイスステージ（2〜16チーム）</option></select></label>
+      <div id="competitionSwissSetup" hidden>
+        <p>各チーム1〜5人。チームごと・メンバーごとにキャラとCPUモデルを指定できます。</p>
+        <label>スイスのラウンド数<input id="competitionRounds" type="number" min="1" max="15" value="3"></label>
+        <div id="competitionParticipants" class="competition-participants"></div>
+        <button id="competitionAdd" type="button">参加チームを追加</button>
+        <p class="series-note">初戦はシードによる組み合わせ。以降は近い勝ち点同士を優先し、再戦を避けます。奇数チームでは不戦勝を割り当てます。ラウンド数の上限は参加チーム数−1です。</p>
+        <p class="series-note">勝利・不戦勝1点、引き分け0.5点。同点は対戦相手の合計勝ち点（不戦勝を除く）、ゲーム得失点、初期シード順で決定。各対戦は指定した先取本数、最大「2×先取本数−1」試合で決着し、勝数が同じなら引き分けです。</p>
+      </div>
+      <div id="competitionSeriesSetup" class="series-entries">
+        <section class="series-entry" data-entry="0"><h3>Aチーム</h3>
           <label>表示名<input id="seriesLabel0" type="text" value="A" maxlength="120"></label>
-          <label>操作主体<select id="seriesKind0"><option value="algorithm">アルゴリズム</option><option value="model">学習モデル（JSON）</option></select></label>
-          <label id="seriesFileGroup0" hidden>モデルファイル<input id="seriesFile0" type="file" accept=".json,application/json"></label>
-          <p id="seriesModel0" class="series-note"></p>
-          <label>キャラクター<select id="seriesCharacter0"></select></label>
+          <label>人数<select id="seriesTeamSize0"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label><div id="seriesTeamMembers0"></div>
         </section>
-        <section class="series-entry" data-entry="1"><h3>B陣営</h3>
+        <section class="series-entry" data-entry="1"><h3>Bチーム</h3>
           <label>表示名<input id="seriesLabel1" type="text" value="B" maxlength="120"></label>
-          <label>操作主体<select id="seriesKind1"><option value="algorithm">アルゴリズム</option><option value="model">学習モデル（JSON）</option></select></label>
-          <label id="seriesFileGroup1" hidden>モデルファイル<input id="seriesFile1" type="file" accept=".json,application/json"></label>
-          <p id="seriesModel1" class="series-note"></p>
-          <label>キャラクター<select id="seriesCharacter1"></select></label>
+          <label>人数<select id="seriesTeamSize1"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label><div id="seriesTeamMembers1"></div>
         </section>
       </div>
       <div class="series-options">
@@ -196,6 +225,13 @@
       <button id="seriesBack" type="button">ロビーへ</button>
     </div>
     <p data-series-status role="status">対戦設定を選んで開始してください。</p>
+    <section id="competitionTables" hidden>
+      <h3>スイスステージ順位表</h3>
+      <div class="series-table-wrap"><table><thead><tr><th>順位</th><th>チーム</th><th>勝ち点</th><th>勝 / 分 / 敗</th><th>不戦勝</th><th>対戦相手点</th><th>ゲーム得失点</th></tr></thead><tbody id="competitionStandings"></tbody></table></div>
+      <h3>組み合わせ・対戦結果</h3>
+      <div class="series-table-wrap"><table><thead><tr><th>ラウンド</th><th>チーム</th><th>対戦相手</th><th>ゲーム勝数</th><th>結果</th></tr></thead><tbody id="competitionPairings"></tbody></table></div>
+      <p class="series-note">下のスコア・タワー・観戦視点は、現在実行中の組み合わせを表示します。</p>
+    </section>
     <div class="series-score" data-series-score>0 − 0</div><p data-series-clock></p>
     <p class="series-note">勝率は決着した試合の勝数 ÷ 決着数。引き分けと中止時の未決着試合は除きます。途中で描画のオン・オフを切り替えられます。</p>
     <div class="series-table-wrap"><table><thead><tr><th>陣営</th><th>操作主体・キャラ</th><th>勝数</th><th>勝率</th><th>現在のタワー</th><th>エネルギー</th></tr></thead><tbody id="seriesStandings"></tbody></table></div>
@@ -222,6 +258,7 @@
 <div id="score">0 - 0</div>
 <div id="objective">タワー残り　自陣 5/5　敵陣 5/5</div>
 <div id="status"></div>
+<details id="teamRosterHud" hidden><summary id="teamRosterSummary"></summary><div id="teamRosterRows"></div></details>
 <nav id="modes" aria-label="ゲームモード">
   <button id="returnLobby" type="button">ロビーに戻る</button>
   <button id="restart" type="button" hidden>最初からテスト</button>
@@ -278,7 +315,10 @@
 <script src="training-data.js"></script>
 <script src="minion-objectives.js"></script>
 <script src="minion-policy.js"></script>
+<script src="team-config.js"></script>
+<script src="team-builder.js"></script>
 <script src="match-series.js"></script>
+<script src="competition.js"></script>
 <script src="session.js"></script>
 <script src="audio.js"></script>
 <script src="skill-aim.js"></script>
@@ -286,6 +326,8 @@
 <script src="touch-controls.js"></script>
 <script src="game.js"></script>
 <script src="lobby.js"></script>
+<script src="team-ui.js"></script>
+<script src="competition-ui.js"></script>
 <script src="match-series-ui.js"></script>
 <script src="training-ui.js"></script>
 </body>

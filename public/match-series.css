@@ -30,3 +30,20 @@ body.series-spectating #skills, body.series-spectating #touchControls, body.seri
   #seriesMonitor { left: 8px; bottom: 12px; padding: 12px; max-height: 40vh; }
   #seriesPanel .series-toolbar button { padding: 10px; font-size: 13px; }
 }
+.team-setup { margin: 24px 0; padding: 16px; background: #14252e; border: 1px solid #63808b; border-radius: 10px; }
+.competition-participants { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin: 18px 0; }
+@media (max-width: 760px) { .competition-participants { grid-template-columns: 1fr; } }
+.team-setup summary { cursor: pointer; font-weight: 700; margin-bottom: 14px; }
+.team-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.team-member { border-top: 1px solid #577181; margin-top: 16px; padding-top: 8px; min-width: 0; }
+.team-member h4 { margin: 8px 0 12px; }
+.team-setup label:not(.series-check), #teamRoomPanel label { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.team-setup input:not([type="checkbox"]), .team-setup select, #teamRoomPanel input, #teamRoomPanel select { box-sizing: border-box; width: 100%; min-width: 0; font: inherit; color: #eef3f6; background: #12212c; border: 1px solid #718c9d; border-radius: 5px; padding: 9px; }
+#teamRoomPanel .team-member select, #teamRoomPanel .team-member input { margin: 6px 0; }
+#teamRoomCodeText { color: #e6c15a; font-variant-numeric: tabular-nums; }
+#teamRoomError, #teamSetupStatus { color: #ffc18e !important; }
+#teamRosterHud { pointer-events: auto; position: fixed; top: 110px; left: 14px; max-height: 45vh; overflow: auto; width: min(280px, 42vw); padding: 9px; border: 1px solid #6b8d9f; border-radius: 6px; background: #10212fee; font-size: 11px; }
+#teamRosterHud summary { cursor: pointer; }
+#teamRosterRows > div { padding: 6px 2px; border-bottom: 1px solid #3d5662; }
+.team-hud-ally { color: #92d9f4; } .team-hud-enemy { color: #ffb7ae; }
+@media (max-width: 760px) { .team-columns { grid-template-columns: 1fr; } #teamRoomPanel h2 { font-size: 24px; } #teamRosterHud { top: 130px; left: 8px; font-size: 10px; } }

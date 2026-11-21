@@ -440,14 +440,15 @@ socket.on('hit', d => {
 
 function hud(st) {
   const list = st.players;
-  const m = list.find(s => s.id === myId), f = list.find(s => s.id !== myId);
+  const m = list.find(s => s.id === myId), enemies = list.filter(s => s.slot !== mySlot), allies = list.filter(s => s.slot === mySlot);
   if (!m || !cfg) return;
   const locked = socket.readOnly || m.dead || m.stun > 0 || m.warping > 0 || m.air > 0 || m.charging || m.grabbing || m.grabbed || m.flying || phase !== 'playing';
   for (const key of ['q', 'e', 'c', 'b']) $(key + 'Skill').disabled = locked || (key !== 'b' && m[key + 'Cd'] > 0);
   $('touchAttack').disabled = locked;
   touchControls?.update();
   $('playerHpFill').style.width = `${Math.max(0, m.hp / m.maxHp) * 100}%`;
-  $('enemyHpFill').style.width = f ? `${Math.max(0, f.hp / f.maxHp) * 100}%` : '0%';
+  $('enemyHpFill').style.width = enemies.length ? `${Math.max(0, enemies.reduce((n, p) => n + p.hp, 0) / enemies.reduce((n, p) => n + p.maxHp, 0)) * 100}%` : '0%';
+  $('foeBar').title = enemies.length > 1 ? '敵チームの合計HP' : '敵のHP';
   const character = ArenaWorld.characterFor(m.character);
   if (character) for (const key of ['q', 'e', 'c']) {
     $(key + 'Label').textContent = character.skills[key].name;
@@ -457,7 +458,18 @@ function hud(st) {
   $('eCooldown').style.height = `${(m.eCd / cfg.eCd) * 100}%`;
   $('cCooldown').style.height = `${(m.cCd / cfg.cCd) * 100}%`;
   $('recallProgress').style.height = `${m.recall > 0 ? (1 - m.recall / cfg.recallTime) * 100 : 0}%`;
-  $('score').textContent = `${m.kills} - ${f ? f.kills : 0}`;
+  $('score').textContent = `${allies.reduce((n, p) => n + p.kills, 0)} - ${enemies.reduce((n, p) => n + p.kills, 0)}`;
+  $('teamRosterHud').hidden = list.length <= 2;
+  if (list.length > 2) {
+    $('teamRosterSummary').textContent = `チーム状況　味方 ${allies.length}人 / 敵 ${enemies.length}人`;
+    const rows = [];
+    for (const p of [...allies, ...enemies]) {
+      const row = document.createElement('div'); row.className = p.slot === mySlot ? 'team-hud-ally' : 'team-hud-enemy';
+      row.textContent = `${p.id === myId ? '自分 ' : ''}${ArenaWorld.characterFor(p.character)?.name || '選択中'} ${p.bot ? 'CPU ' : ''}${p.dead ? '復活待ち' : `HP ${Math.ceil(p.hp)}/${p.maxHp}`}`;
+      rows.push(row);
+    }
+    $('teamRosterRows').replaceChildren(...rows);
+  }
   const own = st.towers.filter(t => t.slot === mySlot && !t.dead).length;
   const enemy = st.towers.filter(t => t.slot !== mySlot && !t.dead).length;
   $('objective').textContent = `タワー残り　自陣 ${own}/5　敵陣 ${enemy}/5｜エネルギー ${m.energy || 0}｜自陣領域 ${Math.round(100 * (1 + (st.control?.[mySlot]?.boundary || 0) / 60) ** 2)}%`;

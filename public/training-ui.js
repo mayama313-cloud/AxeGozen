@@ -45,7 +45,7 @@
       const state = selected.entries.find(e => e.kind === 'frame')?.views[id];
       const character = state?.players.find(p => p.id === id)?.character;
       const option = document.createElement('option'); option.value = id;
-      option.textContent = `${info.source === 'human' ? '人間' : info.source === 'model' ? 'CPU（学習モデル）' : 'CPU（アルゴリズム）'} / ${ArenaWorld.characterFor(character)?.name || character}`;
+      option.textContent = `${info.init.teamSizes ? `${info.init.slot ? 'B' : 'A'}チーム ${1 + (info.init.member || 0)}人目 / ` : ''}${info.source === 'human' ? '人間' : info.source === 'model' ? 'CPU（学習モデル）' : 'CPU（アルゴリズム）'} / ${ArenaWorld.characterFor(character)?.name || character}`;
       $('recordingActor').appendChild(option);
     }
     const result = selected.winner === null ? '未完了' : `陣営${selected.winner + 1}の勝利`;

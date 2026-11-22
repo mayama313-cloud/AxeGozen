@@ -17,22 +17,23 @@ const CFG = {
 const R = CFG.robot;
 const CHARACTERS = [
   { id: 'alex', name: 'アレックス', role: 'タワー攻略', color: '#ee675d',
-    passive: '攻城の血脈：自身と自身の召喚ユニットが、敵タワー・召喚ユニットに与えるダメージが2倍。適用時の攻撃は赤く発光。',
-    skills: { q: { name: 'クレセント', text: '前方を23ダメージで斬り、0.3秒スタン。' }, e: { name: 'ラッシュ', text: 'E長押しで照準、キーを離すか左クリックで射程10の着地点を確定。着地後に近くの敵1体へ45ダメージ・1秒スタン。CD30秒。右クリック・Escで照準解除。' }, c: { name: 'アサルト部隊', text: 'HP80・攻撃力10・速度8のミニオンを1体召喚。最大5体。他のユニットを避けて敵タワーへ進軍し、途中の敵と戦う。' } }, stats: { eCd: 30, qDmg: 23, leapDmg: 45, leapRange: 10 }, robot: { hp: 80, dmg: 10, speed: 8, batch: 1 } },
-  { id: 'mira', name: 'ミラ', role: '機動力・遠めの範囲攻撃', color: '#7ddbd3',
+    passive: '攻城の血脈：自身と自身の召喚ユニットが、敵タワー・召喚ユニットに与えるダメージが1.5倍。適用時の攻撃は赤く発光。',
+    skills: { q: { name: 'クレセント', text: '前方を23ダメージで斬る。' }, e: { name: 'ラッシュ', text: 'E長押しで照準、キーを離すか左クリックで射程10の着地点を確定。着地後に近くの敵1体へ45ダメージ・1秒スタン。CD30秒。右クリック・Escで照準解除。' }, c: { name: 'アサルト部隊', text: 'HP80・攻撃力10・速度8のミニオンを1体召喚。最大5体。他のユニットを避けて敵タワーへ進軍し、途中の敵と戦う。' } },
+    stats: { eCd: 30, qDmg: 23, qStun:0, leapDmg: 45, leapRange: 10 }, robot: { hp: 80, dmg: 10, speed: 8, batch: 1 } },
+  { id: 'mira', name: 'ミラ', role: '機動力', color: '#7ddbd3',
     passive: '風の足取り：移動速度が9から11に上昇。',
     skills: { q: { name: 'フロストファン', text: '射程14の扇形に7ダメージ、1.5秒スタン。CD9秒。' }, e: { name: 'ウィンドステップ', text: '3秒間、移動速度が1.3倍（11→14.3）。CD10秒。' }, c: { name: 'マジックスカウト', text: 'カーソル方向へ射程14の高速魔法を放つ。最初に当たった敵ユニットに30ダメージ、最大6引き寄せ、1.5秒スタン。CD11秒。' } },
     stats: { atkDmg: 15, atkRange: 8, speed: 11, qRange: 14, qArc: Math.PI / 5, qDmg: 7, qStun: 1.5, qCd: 9, eCd: 10, cCd: 11 }, robot: {} },
-  { id: 'bastion', name: 'バスティオン', role: '耐久・防衛', color: '#e8bc65',
+  { id: 'bastion', name: 'バスティオン', role: '防衛', color: '#e8bc65',
     passive: '不屈の体：最大HPが200から280に上昇。',
     skills: { q: { name: 'グラウンドブレイク', text: '周囲3.5の敵に20ダメージ、0.5秒スタン。' }, e: { name: 'アイアンガード', text: '2秒間、受けるダメージを50%軽減。クールダウン6秒。' }, c: { name: 'ガーディアン部隊', text: 'HP100・攻撃力4・速度4の守護ユニットを3体召喚。最大5体。他のユニットを避けながら追従・戦闘する。' } },
     stats: { maxHp: 280, speed: 8.5, qRange: 3.5, qArc: Math.PI, qDmg: 20, qStun: 0.5, qCd: 7, eCd: 6, cCd: 10 }, robot: { hp: 100, dmg: 4, speed: 4, batch: 3 } },
-  { id: 'lucia', name: 'ルシア', role: '悪魔・吸収・奇襲', color: '#c58cff',
+  { id: 'lucia', name: 'ルシア', role: '奇襲', color: '#c58cff',
     passive: '悪魔の渇望：敵キャラクターに実際に与えたダメージの10%をHPとして回復。',
     skills: { q: { name: '禍球', text: '射程12の禍々しい球を放ち、ユニット・タワー・障害物を貫通。敵ごとに1回50ダメージ、命中ごとに自身のHPを30回復。CD6秒。' }, e: { name: '魔影転移', text: '指定地点へ1秒間姿を消してからワープし、半径3に40ダメージ。消えている間は領域ダメージを含め無敵。射程12、CD12秒。' }, c: { name: '闇の帳', text: '5秒間、敵から見えなくなる。攻撃しても解除されない。CD20秒。' } },
     stats: { qRange: 12, qDmg: 50, qStun: 0, qCd: 6, qSpeed: 26, qRadius: 0.45, qHeal: 30, eCd: 12, cCd: 20, leapRange: 12, leapHitRange: 3, warpTime: 1, warpDmg: 40, lifeSteal: 0.1 }, robot: {} },
-  { id: 'darius', name: 'ダリウス', role: '獣・突進・投げ', color: '#dc9255',
-    passive: '巨獣の体：最大HP300。受けるスタンが毎回0.5秒長くなる。通常攻撃は15ダメージの至近距離攻撃で、間隔は1.6秒。',
+  { id: 'darius', name: 'ダリウス', role: 'インファイト', color: '#dc9255',
+    passive: '巨獣の体：最大HP300。受けるスタンが毎回0.5秒長くなる。',
     skills: { q: { name: '獣王の投擲', text: '近くの敵1体を掴み、0.6秒拘束して前方へ投げる。衝突・着地時に50ダメージ、その後1秒スタン。CD10秒。' }, e: { name: '猪突猛進', text: '射程20の指定地点へ突進。接触した敵に40ダメージ・0.5秒スタン。壁に当たると停止。CD20秒。' }, c: { name: '猛牙の突き上げ', text: '近距離の敵1体に30ダメージ。真上に浮かせ、0.25秒スタン。CD5秒。' } },
     stats: { maxHp: 300, radius: 1.05, speed: 8, atkDmg: 15, atkRange: 2, atkCd: 1.6, stunPenalty: 0.5, qRange: 2.2, qArc: Math.PI / 3, qDmg: 50, qCd: 10, qStun: 0, eCd: 20, cCd: 5, leapRange: 20, chargeSpeed: 25, chargeDmg: 40, chargeStun: 0.5, holdTime: 0.6, throwRange: 6, throwTime: 0.5, cRange: 2.2, cDmg: 30, cStun: 0.25, liftTime: 0.6 }, robot: {} },
 ];
@@ -373,7 +374,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   function hit(a, b, dmg) {
     if (!active() || !damageable(a, b)) return 0;
     const enhanced = boosted(a, b);
-    dmg = r2(dmg * (enhanced ? 2 : 1) * (b.shield > 0 ? 0.5 : 1));
+    dmg = r2(dmg * (enhanced ? 1.5 : 1) * (b.shield > 0 ? 0.5 : 1));
     const dealt = Math.min(b.hp, dmg);
     b.hp = Math.max(0, b.hp - dmg);
     if (onCombat) onCombat({ kind: 'damage', source: a.id, owner: a.owner || null, target: b.id, large: !!b.large, slot: a.slot, targetSlot: b.slot,

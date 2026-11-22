@@ -22,7 +22,10 @@ WIDTH, MAX = 96, 128
 class LeagueActor(nn.Module):
     def __init__(self, model):
         super().__init__()
-        p = model['tacticalPolicy']; w = p['weights']; hidden = p['hiddenSize']
+        p = model.get('tacticalPolicy');hidden=p['hiddenSize'] if p else 32
+        w=p['weights'] if p else None
+        self.bootstrap=p is None
+        p=p or {'inferenceTemperature':1,'actionProtocol':'composed-inputs/14'}
         self.inference_temperature = p.get('inferenceTemperature')
         self.action_protocol=p.get('actionProtocol')
         self.hidden = nn.Linear(WIDTH, hidden)
@@ -31,10 +34,15 @@ class LeagueActor(nn.Module):
         self.critic = nn.Sequential(nn.Linear(model['inputSize'], 64), nn.Tanh(), nn.Linear(64, 1))
         nn.init.zeros_(self.context.weight); nn.init.zeros_(self.critic[-1].weight); nn.init.zeros_(self.critic[-1].bias)
         with torch.no_grad():
-            source = torch.tensor(w['hiddenW']); self.hidden.weight.zero_(); self.hidden.weight[:, :source.shape[1]].copy_(source)
-            self.hidden.bias.copy_(torch.tensor(w['hiddenB'])); self.output.weight.copy_(torch.tensor([w['outputW']]))
-            self.output.bias.copy_(torch.tensor([w['outputB']]))
-            if 'contextW' in w: self.context.weight.copy_(torch.tensor(w['contextW']))
+            if w:
+                source = torch.tensor(w['hiddenW']); self.hidden.weight.zero_(); self.hidden.weight[:, :source.shape[1]].copy_(source)
+                self.hidden.bias.copy_(torch.tensor(w['hiddenB'])); self.output.weight.copy_(torch.tensor([w['outputW']]))
+                self.output.bias.copy_(torch.tensor([w['outputB']]))
+                if 'contextW' in w:self.context.weight.copy_(torch.tensor(w['contextW']))
+            else:
+                # Trainable prior for the BC proposal; no target/HP strategy override.
+                self.hidden.weight[0].zero_();self.hidden.weight[0,63]=4;self.hidden.bias[0]=-2
+                self.output.weight.zero_();self.output.weight[0,0]=3;self.output.bias.zero_()
 
     def forward(self, x, choices, mask):
         scores = self.output(torch.tanh(self.hidden(choices) + self.context(x)[:, None, :])).squeeze(-1)
@@ -106,8 +114,10 @@ def main():
         raise ValueError('Output already contains a run; choose a new directory and resume with --model previous/latest-model.json')
     args.output.mkdir(parents=True, exist_ok=True)
     source = args.model.read_bytes(); base = json.loads(source.decode('utf-8-sig'))
+    if args.envs%len(base['characters']):raise ValueError('envs must be a multiple of the number of characters for equal training experience')
     (args.output/'initial-model.json').write_bytes(source)
     actor = LeagueActor(base); optimizer = torch.optim.Adam(actor.parameters(), lr=args.learning_rate)
+    if actor.bootstrap:base.setdefault('controlProtocol','release-before-chase/1')
     resume = args.model.parent/'league-state.pt'
     if base.get('leagueTraining') and resume.exists():
         state = torch.load(resume, map_location='cpu', weights_only=True)
@@ -116,9 +126,11 @@ def main():
         for group in optimizer.param_groups: group['lr'] = args.learning_rate
     for key in ['objectivePolicy','selection','perceptionAdapter','defenseAdapter']: base.pop(key,None)
     base['decisionMode'] = 'learned/1'; base['decisionIntervalTicks'] = args.interval_ticks
-    base['modelName'] = 'ミニオン v1（v13 ファーム・攻城 PPO）'
+    base['modelName'] = 'ミニオン v1（v15 5キャラPPO）' if len(base['characters'])==5 else 'ミニオン v1（リーグPPO）'
     report = {'algorithm':'PPO','protocol':'full-match-league/12','status':'training','source':str(args.model.resolve()),'sourceSha256':hashlib.sha256(source).hexdigest(),
               'seed':args.seed,'config':vars(args).copy(),'history':[],'episodes':[],'snapshots':[],
+              'bootstrapFromImitation':actor.bootstrap,'trainingCharacters':base['characters'],
+              'initialization':'Trainable BC-proposal prior; full-observation context and candidate head learn from PPO rewards' if actor.bootstrap else 'Existing candidate-policy weights',
               'opponentRule':'Frozen latest 40%, recent/history 30%, algorithm 30% by default; active matches retain their original opponent',
               'limitation':'Training checkpoints are not automatically certified as stronger; time limits count as draws, not wins.'}
     report['config'] = {k: str(v) if isinstance(v,Path) else [str(x) for x in v] if isinstance(v,list) else v for k,v in report['config'].items()}
@@ -148,9 +160,12 @@ def main():
         temp = args.output/'league-training.tmp'; temp.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8');temp.replace(args.output/'league-training.json')
     engine = Engine(args.node); started = time.monotonic(); gamma, lam = .9997, .97
     try:
+        rules=engine.call({'op':'rules'})
+        base['init'].update({k:rules[k] for k in ['cfg','map','characters']})
+        report['engineRules']=rules
         warm = save('warm-start-model.json',0); current_pool = pool(warm)
         initialized = engine.call({'op':'init','model':str(warm.resolve()),'pool':current_pool,'envs':args.envs,
-                                   'options':{'seed':args.seed,'maxSeconds':args.max_seconds,'intervalTicks':args.interval_ticks,'gamma':gamma,
+                                   'balancedCharacters':True,'options':{'seed':args.seed,'maxSeconds':args.max_seconds,'intervalTicks':args.interval_ticks,'gamma':gamma,
                                               'farmStartFraction':args.farm_start_fraction,'pushStartFraction':args.push_start_fraction}})
         obs = initialized['observations']; report['rewards'] = initialized['rewards']; report['rewardProfile'] = initialized['rewardProfile']; report['gamma'] = gamma; report['gaeLambda'] = lam
         frozen_evaluation_pool = copy.deepcopy(current_pool)

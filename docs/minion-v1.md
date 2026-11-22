@@ -603,3 +603,73 @@ v12の候補方策は学習時に確率選択していたが、推論時は最�
 依頼対象のファーム・攻城と試合の勝数が改善したため、今回は採用した。ただし死亡・停止時間は旧モデルより悪い。特にダリウスは別シード4試合で0勝2敗2分であり、全キャラで問題が解消したとは扱わない。試合時間が異なるので行動量は合計プレイ時間で正規化する。`release-evaluation.json`に採用根拠・悪化した指標・モデルとコードのハッシュを保存した。これは限られた対戦組み合わせでの結果で、一般的な勝率の保証ではない。
 
 JavaScript 251件・Python 22件が通り、ブラウザーのCPU戦とシリーズ完走も確認した。旧来の撤退・目的地優先ルールを呼ぶと例外になる状態でも動作する。PythonとJavaScriptの選択候補スコア差は約2.4e-7。
+
+### v15：模倣学習のキャラ偏りを修正
+
+`train-minion.py`の分割を、試合単位を守りながらキャラの学習・検証の両方への出現を考慮する方式へ変更した。あるキャラの唯一の試合を、全体ごと検証用へ送ることはしない。唯一の試合を含む共有試合も、丸ごと学習用へ残す。別試合で検証できないキャラは、レポートで検証値を`null`として明示する。データ全体が1試合の場合のみ、従来どおり3秒の空白を設けた時系列診断を行い、独立試合での検証ではないと記録する。
+
+学習時は各キャラを同数抽出し、そのキャラ内の試合も均等に選ぶ。長い試合やアレックスのデータ量が勾配を支配しにくいようにする。抽出は復元抽出であり、少数キャラの新しい経験が増えたわけではない。行動種別の損失重みも、この均等抽出後の期待分布から計算する。観測の隠れ層・行動出力・座標出力をすべて初期化して学習し直し、古い観測処理は固定しない。
+
+現在の保存済みデータから30エポック学習した土台は`datas/models/minion-v1-v15-balanced-imitation/model.json`。各エポックで5キャラそれぞれ7,398回を抽出した。学習前後ですべてのキャラの学習損失が低下し、5キャラ各60秒の動作確認とブラウザーでのルシア選択・CPU戦を確認した。
+
+| キャラ | 学習サンプル | 学習試合 | 別試合の検証サンプル |
+| --- | ---: | ---: | ---: |
+| アレックス | 21,379 | 12 | 3,677 |
+| ミラ | 3,653 | 1 | 1,018 |
+| バスティオン | 4,308 | 1 | 2,261 |
+| ダリウス | 5,227 | 1 | なし |
+| ルシア | 2,422 | 1 | なし |
+
+ダリウス・ルシアは元データ全体でも各1試合のため、独立した試合での評価には追加データが必要。このv15は模倣学習の土台であり、v14との実戦強度比較を済ませた置き換えモデルではない。対応キャラは5キャラを収録し、後続の強化学習へ渡す際もこの対応一覧を引き継ぐ。レポートは`training.json`と`release-evaluation.json`。
+
+```powershell
+# 準備済みデータを再利用する。出力には新しいディレクトリを指定する。
+& "$env:TEMP\axegozen-node-runtime\node.exe" scripts/minion-v1.js train --prepared datas/models/minion-v1/prepared.json --output datas/models/minion-v1-v15-my-imitation --python D:\git\python\python.exe --epochs 30 --seed 17
+
+# 新しい教師データを追加した後は、--preparedを付けず原本から準備し直す。
+& "$env:TEMP\axegozen-node-runtime\node.exe" scripts/minion-v1.js train --output datas/models/minion-v1-v15-more-data --python D:\git\python\python.exe --epochs 30 --seed 17
+```
+
+既存の`model.json`・`training.json`・`parity.json`がある学習先は上書きを拒否する。今回、Python 27件と学習関連JavaScript 14件が通った。JavaScript全体では244件成功・8件失敗で、失敗は現在の倍率・スタン設定と既存の戦闘テストの期待値の不一致による。今回ゲーム本体には変更を加えていない。
+
+### v15：均等な5キャラでPPOを開始する
+
+`league`は候補選択モデルをまだ持たない模倣学習モデルからも開始できる。最初は模倣モデルが提案した候補を優先する学習可能な重みで初期化する。その後は、全体観測を処理する文脈層・候補の隠れ層・行動スコア・価値関数をPPOの報酬で更新する。模倣モデル本体は入力候補を提案する土台として維持し、撤退・ファーム・攻城の実行時ルールは使わない。
+
+学習環境にはキャラと陣営を割り当て、試合の終了順によらず各キャラの学習ステップ数を均等にする。5キャラでは10環境で両陣営をカバーする。CLIの環境数・評価試合数の既定値も対応キャラ数の2倍にした。環境数を手動指定する場合は対応キャラ数の倍数が必要。対戦相手は最新自身40%・過去モデル30%・アルゴリズム30%を基本とし、進行中の試合の相手は固定する。
+
+学習に使う現在の公開ルールをエンジンから取得し、書き出すモデルの`init`にも保存する。教師データ収集時からダメージ・スタン等が変更されていても、学習側とブラウザー側の観測設定が食い違わないようにする。新規PPOの推論温度は1で、学習時の行動分布と合わせる。
+
+```powershell
+# 新しい出力ディレクトリで開始する。
+& "$env:TEMP\axegozen-node-runtime\node.exe" scripts/minion-v1.js league --model datas/models/minion-v1-v15-balanced-imitation/model.json --output datas/models/minion-v1-v15-my-ppo --history datas/models/minion-v1-v14-balanced/model.json --history datas/models/minion-v1-v12-activity/model.json --python D:\git\python\python.exe --updates 96 --steps 128 --envs 10 --max-seconds 300 --eval-games 10 --eval-seconds 600 --snapshot-every 8 --seed 20270105
+
+# 重み・価値関数・optimizerを引き継ぐ。試合自体は新しく開始する。
+& "$env:TEMP\axegozen-node-runtime\node.exe" scripts/minion-v1.js league --model datas/models/minion-v1-v15-balanced-ppo/latest-model.json --output datas/models/minion-v1-v15-ppo-next --history datas/models/minion-v1-v14-balanced/model.json --history datas/models/minion-v1-v12-activity/model.json --python D:\git\python\python.exe --updates 96 --envs 10 --eval-games 10 --max-seconds 300 --eval-seconds 600
+```
+
+`league-training.json`に更新数・試合の結果・相手・キャラ・報酬を記録し、`latest-model.json`と`league-state.pt`を毎更新保存する。終了時には同じ固定相手・シード・時間上限で開始時と終了時のモデルを比較する。勝利は実際のタワー全破壊のみで、時間切れは引き分け。学習用のファーム開始・領域9%開始の試合を、通常開始の評価と混ぜない。保存された候補が実戦で強くなったかは、評価結果を見て判断する。
+
+途中の固定チェックポイントも、同じ評価相手・シードで検証できる。`evaluate-minion-checkpoint.py`は学習開始後にゲーム本体のコードが変わった場合や、評価中に入力モデルが変わった場合は比較を中止する。学習中の`latest-model.json`ではなく、固定チェックポイントを指定する。
+
+```powershell
+& D:\git\python\python.exe scripts/evaluate-minion-checkpoint.py --run datas/models/minion-v1-v15-balanced-ppo --model datas/models/minion-v1-v15-balanced-ppo/checkpoint-00032.json --node "$env:TEMP\axegozen-node-runtime\node.exe" --output datas/models/minion-v1-v15-balanced-ppo/my-checkpoint32-evaluation.json
+```
+
+今回の実行先は`datas/models/minion-v1-v15-balanced-ppo`。96更新・122,880遷移・106完了試合を学習し、各キャラに24,576ステップずつを割り当てた。学習時間は約21分（終了時の比較評価を含む）。開始時・8/32/64/96更新の固定モデルを検証した。
+
+温度1での通常開始10試合は、開始時1勝5敗4分→終了時0勝7敗3分で悪化した。そこで推論温度を0.3に下げ、開始時モデルにも同じ温度を適用して比較した。最初のシードでは0勝6敗4分→1勝5敗4分。モデルを固定し、別シード21270106でも確認した結果は以下。
+
+| 別シード10試合、両方とも温度0.3 | 開始時 | 96更新後 |
+| --- | ---: | ---: |
+| 勝／敗／時間切れ引き分け | 0／7／3 | 1／5／4 |
+| 自陣小型撃破／分 | 1.112 | 1.662 |
+| 敵タワーダメージ／分 | 2.41 | 8.94 |
+| 死亡／分 | 0.566 | 0.411 |
+| 停止時間の秒数／分 | 9.01 | 1.51 |
+
+`model.json`は96更新モデルの推論温度だけを0.3へ変更した候補。生の温度1の重みは`checkpoint-00096.json`・`latest-model.json`に残し、optimizer付きの再開には`latest-model.json`を指定する。`model.json`からの再開は温度変更で`league-state.pt`のハッシュと一致しないため拒否される。評価時だけ温度を変える場合は、チェックポイント評価スクリプトに`--temperature 0.3`を指定できる。
+
+これは模倣学習後の最初の5キャラPPO候補で、v14を上回る対戦モデルと確認したものではない。別シードでもルシアは0勝2敗、ダリウス等には時間切れが残る。有限の10試合での改善を一般的な勝率の保証にはしない。`release-evaluation.json`には温度1で悪化した結果と温度0.3での比較を分けて保存した。
+
+Python 28件と学習関連JavaScript 27件が通り、全体のJavaScriptは246件成功・既存の戦闘期待値不一致8件失敗。学習開始時と推論用モデルの公開ルールが一致すること、候補スコアのPython/JavaScript差が約2.8e-7であることを確認した。

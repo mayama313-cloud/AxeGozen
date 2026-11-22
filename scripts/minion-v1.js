@@ -137,13 +137,13 @@ function smoke() {
   const command = process.argv[2] || 'check';
   if (command === 'league') {
     const initial = path.resolve(arg('model', 'datas/models/minion-v1-v11-combat/model.json'));
-    Policy.validate(readJSON(initial));
+    const initialModel=Policy.validate(readJSON(initial));
     const histories = process.argv.flatMap((v,i) => v === '--history' ? [path.resolve(process.argv[i+1])] : []);
     if (!histories.length) histories.push(path.resolve('datas/models/minion-v1-v10-bush-adapter/model.json'),path.resolve('datas/models/minion-v1-v8-offense/model.json'));
     histories.forEach(f => Policy.validate(readJSON(f)));
     const args = [path.join(__dirname,'train-minion-league.py'),'--model',initial,'--output',output,'--node',process.execPath];
     for (const file of histories) args.push('--history',file);
-    for (const [name,fallback] of Object.entries({ updates:'128',steps:'128',envs:'8','max-seconds':'600','interval-ticks':'6','snapshot-every':'8','history-size':'6',seed:'20261204','eval-games':'8','eval-seconds':'900','latest-weight':'4','history-weight':'3','algorithm-weight':'3','learning-rate':'.0003','farm-start-fraction':'.25','push-start-fraction':'.25' })) args.push('--'+name,arg(name,fallback));
+    for (const [name,fallback] of Object.entries({ updates:'128',steps:'128',envs:String(initialModel.characters.length*2),'max-seconds':'600','interval-ticks':'6','snapshot-every':'8','history-size':'6',seed:'20261204','eval-games':String(initialModel.characters.length*2),'eval-seconds':'900','latest-weight':'4','history-weight':'3','algorithm-weight':'3','learning-rate':'.0003','farm-start-fraction':'.25','push-start-fraction':'.25' })) args.push('--'+name,arg(name,fallback));
     const result=spawnSync(arg('python','python'),args,{stdio:'inherit'});
     if (result.error || result.status !== 0) throw result.error || Error('リーグ学習に失敗しました。');
     const model=Policy.validate(readJSON(path.join(output,'model.json'))),probe=readJSON(path.join(output,'league-parity.json')),D=require('../public/minion-decisions');
@@ -151,9 +151,15 @@ function smoke() {
     if (error > 1e-4) throw Error('リーグ方策のPython/JavaScript不一致: '+error);
     console.log(JSON.stringify({leagueParityError:error,report:path.join(output,'league-training.json')})); return;
   }
-  if (['check', 'prepare', 'train'].includes(command)) await prepare();
   if (command === 'train') {
-    const result = spawnSync(arg('python', 'python'), [path.join(__dirname, 'train-minion.py'), '--output', output, '--epochs', arg('epochs', '30')], { stdio: 'inherit' });
+    if (['model.json','training.json','parity.json'].some(f=>fs.existsSync(path.join(output,f)))) throw Error('Choose a new output directory; existing models are not overwritten.');
+    if(arg('prepared',null))preflight(path.resolve(arg('prepared',null)));
+  }
+  if (['check', 'prepare', 'train'].includes(command) && !(command === 'train' && arg('prepared', null))) await prepare();
+  if (command === 'train') {
+    const args=[path.join(__dirname, 'train-minion.py'), '--output', output, '--epochs', arg('epochs', '30'),'--seed',arg('seed','17')];
+    if(arg('prepared',null))args.push('--prepared',path.resolve(arg('prepared',null)));
+    const result = spawnSync(arg('python', 'python'), args, { stdio: 'inherit' });
     if (result.error || result.status !== 0) throw result.error || Error('学習処理に失敗しました。');
   }
   if (command === 'rl') {

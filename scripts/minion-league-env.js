@@ -53,6 +53,8 @@ class LeagueEnvironment {
   random() { this.seed = (Math.imul(this.seed, 1664525) + 1013904223) >>> 0; return this.seed / 4294967296; }
   reset(forced = {}) {
     this.fixture = this.pool.draw(this.model.characters); this.episode++; this.elapsed = 0; this.memory = {}; this.cues = []; this.combat = [];
+    if(this.options.learnerCharacter)this.fixture.character=this.options.learnerCharacter;
+    if(this.options.learnerSlot!==undefined)this.fixture.slot=this.options.learnerSlot;
     Object.assign(this.fixture,forced);
     if (!this.model.characters.includes(this.fixture.character) || ![0,1].includes(this.fixture.slot)) throw Error('Invalid forced fixture');
     const draw=this.random();
@@ -266,10 +268,14 @@ async function serve() {
   for await (const line of readline.createInterface({ input: process.stdin, crlfDelay: Infinity })) {
     try {
       const q = JSON.parse(line); let response;
-      if (q.op === 'init') {
+      if(q.op==='rules'){
+        response={cfg:World.CFG,map:World.MAP,characters:World.CHARACTERS,tick:World.TICK};
+      } else if (q.op === 'init') {
         if (!Number.isInteger(q.envs) || q.envs < 1 || q.envs > 16) throw Error('envs must be 1..16');
         pool = new Pool(q.pool); const model = load(q.model).model;
-        environments = Array.from({length:q.envs},(_,i) => new LeagueEnvironment(model,pool,{...q.options,seed:q.options.seed+i*997}));
+        if(q.balancedCharacters&&q.envs%model.characters.length)throw Error('envs must be a multiple of the number of characters');
+        environments = Array.from({length:q.envs},(_,i) => new LeagueEnvironment(model,pool,{...q.options,seed:q.options.seed+i*997,
+          ...(q.balancedCharacters?{learnerCharacter:model.characters[i%model.characters.length],learnerSlot:Math.floor(i/model.characters.length)%2}:{})}));
         response = { observations: environments.map(e => e.reset()), rewards: REWARDS, rewardProfile: REWARD_VERSION };
       } else if (q.op === 'step') {
         if (q.actions?.length !== environments.length) throw Error('Invalid action batch');

@@ -21,3 +21,12 @@ test('JSON errors include the path and JSONL line, while UTF-8 BOMs are accepted
   assert.throws(() => parseJSON('broken', 'data.jsonl', 14), e => e.code === 'MINION_INVALID_JSON' && e.message.includes('data.jsonl:14'));
   assert.deepEqual(parseJSON('\uFEFF{"ok":true}', 'data.json'), { ok: true });
 });
+
+test('imitation training refuses an existing model before reading data or invoking Python', t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'minion-existing-model-'));
+  const file=path.join(dir,'model.json');fs.writeFileSync(file,'original model');
+  t.after(()=>{fs.unlinkSync(file);fs.rmdirSync(dir);});
+  const result=require('node:child_process').spawnSync(process.execPath,[path.join(__dirname,'scripts/minion-v1.js'),'train','--output',dir,'--prepared',path.join(dir,'missing.json'),'--python','missing-python'],{encoding:'utf8'});
+  assert.equal(result.status,1);assert.match(result.stderr,/existing models are not overwritten/);
+  assert.equal(fs.readFileSync(file,'utf8'),'original model');
+});

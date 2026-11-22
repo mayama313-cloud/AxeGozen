@@ -26,8 +26,8 @@ const CHARACTERS = [
     stats: { atkDmg: 15, atkRange: 8, speed: 11, qRange: 14, qArc: Math.PI / 5, qDmg: 7, qStun: 1.5, qCd: 9, eCd: 10, cCd: 11 }, robot: {} },
   { id: 'bastion', name: 'バスティオン', role: '防衛', color: '#e8bc65',
     passive: '不屈の体：最大HPが200から280に上昇。',
-    skills: { q: { name: 'グラウンドブレイク', text: '周囲3.5の敵に20ダメージ、0.5秒スタン。' }, e: { name: 'アイアンガード', text: '2秒間、受けるダメージを50%軽減。クールダウン6秒。' }, c: { name: 'ガーディアン部隊', text: 'HP100・攻撃力4・速度4の守護ユニットを3体召喚。最大5体。他のユニットを避けながら追従・戦闘する。' } },
-    stats: { maxHp: 280, speed: 8.5, qRange: 3.5, qArc: Math.PI, qDmg: 20, qStun: 0.5, qCd: 7, eCd: 6, cCd: 10 }, robot: { hp: 100, dmg: 4, speed: 4, batch: 3 } },
+    skills: { q: { name: 'グラウンドブレイク', text: '周囲3.5の敵に20ダメージ、0.5秒スタン。' }, e: { name: 'アイアンガード', text: '5秒間、受けるダメージを50%軽減。クールダウン10秒。' }, c: { name: 'ガーディアン部隊', text: 'HP100・攻撃力4・速度4の守護ユニットを3体召喚。最大5体。他のユニットを避けながら追従・戦闘する。' } },
+    stats: { maxHp: 280, speed: 8.5, qRange: 3.5, qArc: Math.PI, qDmg: 20, qStun: 0.5, qCd: 7, eCd: 10, cCd: 10 }, robot: { hp: 100, dmg: 4, speed: 4, batch: 3 } },
   { id: 'lucia', name: 'ルシア', role: '奇襲', color: '#c58cff',
     passive: '悪魔の渇望：敵キャラクターに実際に与えたダメージの10%をHPとして回復。',
     skills: { q: { name: '禍球', text: '射程12の禍々しい球を放ち、ユニット・タワー・障害物を貫通。敵ごとに1回50ダメージ、命中ごとに自身のHPを30回復。CD6秒。' }, e: { name: '魔影転移', text: '指定地点へ1秒間姿を消してからワープし、半径3に40ダメージ。消えている間は領域ダメージを含め無敵。射程12、CD12秒。' }, c: { name: '闇の帳', text: '5秒間、敵から見えなくなる。攻撃しても解除されない。CD20秒。' } },
@@ -742,7 +742,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
       p.recall = 0;
       if (p.character === 'alex') { p.aiming = !p.aiming; return; }
       p.eCd = p.cfg.eCd;
-      if (p.character === 'bastion') { p.shield = 2; fx(p, 'shield'); return; }
+      if (p.character === 'bastion') { p.shield = 5; fx(p, 'shield'); return; }
       if (p.character === 'mira') { p.speedBoost = p.cfg.windTime; fx(p, 'wind'); }
     });
     listen('c', d => {

@@ -35,5 +35,23 @@ class LeagueTests(unittest.TestCase):
         model=self.model();model['tacticalPolicy']['inferenceTemperature']=.25
         self.assertEqual(module.LeagueActor(model).export()['inferenceTemperature'],.25)
 
+    def test_plain_imitation_model_bootstraps_a_trainable_proposal_prior(self):
+        model={'inputSize':1024};actor=module.LeagueActor(model)
+        x=torch.ones(1,1024);c=torch.zeros(1,128,96);c[0,0,63]=1
+        mask=torch.zeros(1,128,dtype=torch.bool);mask[0,:2]=True
+        distribution,_=actor(x,c,mask)
+        self.assertTrue(actor.bootstrap)
+        self.assertGreater(float(distribution.probs[0,0].detach()),.9)
+        self.assertGreater(float(distribution.probs[0,1].detach()),0)
+        (-distribution.log_prob(torch.tensor([1]))).backward()
+        self.assertGreater(float(actor.hidden.weight.grad.abs().sum()),0)
+        optimizer=torch.optim.Adam(actor.parameters(),lr=.001);optimizer.step();optimizer.zero_grad()
+        distribution,_=actor(x,c,mask)
+        (-distribution.log_prob(torch.tensor([1]))).backward()
+        self.assertGreater(float(actor.context.weight.grad.abs().sum()),0)
+        self.assertNotIn('tacticalPolicy',model)
+        self.assertEqual(actor.export()['actionProtocol'],'composed-inputs/14')
+        self.assertEqual(actor.export()['inferenceTemperature'],1)
+
 
 if __name__=='__main__':unittest.main()

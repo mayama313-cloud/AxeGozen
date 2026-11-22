@@ -241,3 +241,22 @@ test('policy rollouts include the aftermath of a kill and replay identically',()
   env.restore(saved);assert.equal(env.lookahead(q,2,{followPolicyAfter:.2}),value);
   assert.deepEqual(env.game.observe(p.id),after);
 });
+
+test('assigned training characters and sides survive short and long episode resets',()=>{
+  const m=model();m.characters=[...m.characters.filter(c=>c!=='lucia'),'lucia'];
+  const pool=new Pool(config);
+  const envs=m.characters.flatMap(character=>[0,1].map(slot=>new LeagueEnvironment(m,pool,{learnerCharacter:character,learnerSlot:slot})));
+  for(let round=0;round<4;round++)for(let i=0;i<envs.length;i++){
+    envs[i].reset();const learner=envs[i].state.players.find(p=>p.id==='league-learner');
+    assert.equal(learner.character,m.characters[Math.floor(i/2)]);assert.equal(learner.slot,i%2);
+  }
+});
+
+test('league protocol exposes current public rules for matching training and inference',()=>{
+  const result=require('node:child_process').spawnSync(process.execPath,[require.resolve('./scripts/minion-league-env')],{
+    input:'{"op":"rules"}\n{"op":"close"}\n',encoding:'utf8'});
+  assert.equal(result.status,0);
+  const rules=JSON.parse(result.stdout.split('\n')[0]);
+  assert.deepEqual(rules.cfg,JSON.parse(JSON.stringify(World.CFG)));
+  assert.deepEqual(rules.map,JSON.parse(JSON.stringify(World.MAP)));assert.equal(rules.tick,World.TICK);
+});

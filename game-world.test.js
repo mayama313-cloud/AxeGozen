@@ -447,7 +447,7 @@ test('player right-click and Q damage towers; last destroyed tower ends match an
   assert.deepEqual(aim(p), pos); assert.equal(p.hp, hp);
 });
 
-test('respawn is five seconds plus five per own destroyed tower, fixed at death even when a tower is destroyed during countdown', () => {
+test('respawn is five seconds plus 2.5 per destroyed tower on either team, fixed at death', () => {
   const { match, a, b, p, q, towers } = setup();
   place(p, 0, 0); place(q, 1, 0); p.hp = CFG.qDmg;
   b.send('q', aim(p));
@@ -462,8 +462,8 @@ test('respawn is five seconds plus five per own destroyed tower, fixed at death 
   ticks(match, TICK + 1); assert.equal(p.dead, false); assert.equal(p.hp, CFG.maxHp);
   assert.deepEqual(aim(p), MAP.spawns[0]);
   place(p, 0, 0); place(q, 1, 0); p.hp = CFG.qDmg; q.qCd = 0;
-  b.send('q', aim(p)); assert.equal(p.respawn, 10);
-  // 敵タワーの破壊数は自分の復活時間に加算されない。
+  b.send('q', aim(p)); assert.equal(p.respawn, 7.5);
+  // 両チームとも、両陣営の破壊数の合計を使う。
   const enemy = towers['t1-2'];
   place(q, 0, 0); q.hp = CFG.qDmg; place(p, 1, 0); p.dead = false; p.qCd = 0;
   enemy.dead = true;
@@ -479,16 +479,17 @@ test('tower retaliates against enemies, not its owner', () => {
   assert.equal(q.hp, CFG.maxHp);
 });
 
-test('each side uses its own tower losses for every playable respawn penalty', () => {
-  for (const slot of [0, 1]) for (let count = 0; count < 5; count++) {
+test('both sides use the combined tower losses in the respawn timer and observation', () => {
+  for (const slot of [0, 1]) for (let count = 0; count < 5; count++) for (let other = 0; other < 5; other++) {
     const { match, a, b, p, q, towers } = setup();
     const victim = slot ? q : p, attacker = slot ? p : q, sock = slot ? a : b;
     for (const t of Object.values(towers)) {
-      if (t.slot === slot && Number(t.id.split('-')[1]) < count) { t.dead = true; t.hp = 0; }
+      if (Number(t.id.split('-')[1]) < (t.slot === slot ? count : other)) { t.dead = true; t.hp = 0; }
     }
     place(victim, 0, 0); place(attacker, 1, 0); victim.hp = CFG.qDmg;
     sock.send('q', aim(victim));
-    assert.equal(victim.respawn, 5 + count * 5);
+    assert.equal(victim.respawn, 5 + (count + other) * 2.5);
+    assert.equal(match.observe(victim.id).players.find(p => p.id === victim.id).respawnTime, victim.respawn);
     match.tick();
     assert.equal(sock.events.state.winner, null);
   }

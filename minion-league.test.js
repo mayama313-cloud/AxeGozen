@@ -81,6 +81,51 @@ function warmEnvironment() {
   for(let i=0;i<180;i++)env.game.tick();env.state=env.game.observe('league-learner');env.observation();return env;
 }
 function choose(env,event) {return env.choices.findIndex(c=>c.action.event===event);}
+
+test('tactical curriculum covers both sides and all characters without changing the action selector',()=>{
+  const m=model();m.characters=World.CHARACTERS.map(c=>c.id);
+  for(const scenario of ['retreat-duel','finish-duel'])for(const slot of [0,1])for(const character of m.characters){
+    const env=new LeagueEnvironment(m,new Pool(config));env.reset({scenario,slot,character});
+    const p=env.state.players.find(p=>p.id==='league-learner'),enemy=env.state.players.find(p=>p.id==='league-opponent');
+    assert.ok(enemy.vis && !enemy.dead,`${scenario}/${slot}/${character}`);
+    if(scenario==='retreat-duel'){
+      assert.ok(p.hp/p.maxHp>=.19&&p.hp/p.maxHp<=.46);
+      assert.equal(p.inputs.target,enemy.id);
+      assert.ok(env.choices.some(c=>c.action.inputs?.some(i=>i.event==='dash')));
+    }else{
+      assert.ok(enemy.hp>0&&enemy.hp<=World.configFor(character).atkDmg);
+    }
+    assert.ok(env.choices.some(c=>c.action.event==='chase'&&c.action.data.id===enemy.id));
+    assert.ok(env.choices.some(c=>c.action.event==='move'&&c.x[46]===1));
+  }
+  assert.throws(()=>new LeagueEnvironment(m,new Pool(config),{retreatStartFraction:.6,finishStartFraction:.5}));
+});
+
+test('low health values recovery and leaving threats; healthy actors value finishing and tower progress',()=>{
+  const env=new LeagueEnvironment(model(),new Pool(config));env.reset({scenario:'retreat-duel',slot:0,character:'alex'});
+  const p=env.state.players.find(p=>p.id==='league-learner'),enemy=env.state.players.find(p=>p.id==='league-opponent');
+  const dangerous=env.potential();enemy.x=25;enemy.z=-25;
+  assert.ok(env.potential()>dangerous);
+  const injured=env.potential();p.hp=p.maxHp;assert.ok(env.potential()>injured);
+  enemy.x=p.x+4;enemy.z=p.z;enemy.hp=enemy.maxHp;
+  const healthyEnemy=env.potential();enemy.hp=1;assert.ok(env.potential()>healthyEnemy);
+  enemy.dead=true;
+  env.state.monsters=[];
+  env.state.towers=[{id:'target',slot:1,x:12,z:8,hp:100}];
+  const far=env.potential();p.x=6;assert.ok(env.potential()>far);
+});
+
+test('learned retreat mobility cancels an existing chase through ordinary inputs',()=>{
+  const m=model();m.tacticalPolicy.inferenceTemperature=0;
+  const env=new LeagueEnvironment(m,new Pool(config));env.reset({scenario:'retreat-duel',character:'mira',slot:0});
+  // Reward a home-directed E in the test policy, rather than forcing a runtime rule.
+  const w=m.tacticalPolicy.weights;w.hiddenW[0][37]=1;w.hiddenW[0][46]=1;w.hiddenB[0]=-1.5;
+  const action=Policy.decide(m,env.state,'league-learner',env.memory);
+  assert.equal(action.event,'dash');assert.ok(action.inputs);
+  for(const c of Policy.commands(m,env.state,'league-learner',action))env.game.input('league-learner',c.event,c.data);
+  const p=env.game.state.players['league-learner'];
+  assert.equal(p.target,null);assert.deepEqual(p.dest,World.MAP.spawns[0]);assert.ok(p.speedBoost>0);
+});
 test('standing at spawn costs every second, even with a distant stale target',()=>{
   const env=warmEnvironment(),p=env.game.state.players['league-learner'];
   p.target=Object.values(env.game.state.towers).find(t=>t.slot!==p.slot).id;

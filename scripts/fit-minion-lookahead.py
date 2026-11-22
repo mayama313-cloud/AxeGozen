@@ -72,7 +72,7 @@ def main():
     def save(name,epoch):
         model=copy.deepcopy(base)
         for key in ['leagueTraining','selection']:model.pop(key,None)
-        model['modelName']='ミニオン v1（v14 シミュレーション価値学習）';model['decisionMode']='learned/1'
+        model['modelName']=base.get('modelName','ミニオン v1')+' / シミュレーション価値学習';model['decisionMode']='learned/1'
         model['tacticalPolicy']=actor.export();model['tacticalPolicy']['inferenceTemperature']=args.temperature
         model['lookaheadTraining']={'algorithm':report['algorithm'],'epochs':epoch,'datasetSha256':report['datasetSha256'],'report':'lookahead-training.json'}
         (args.output/name).write_text(json.dumps(model,ensure_ascii=False),encoding='utf8')

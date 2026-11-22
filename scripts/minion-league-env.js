@@ -7,11 +7,12 @@ const Decisions = require('../public/minion-decisions');
 const { readJSON } = require('./minion-input');
 const init = model => ({ ...model.init, map: World.MAP, cfg: World.CFG, characters: World.CHARACTERS });
 const load = file => { const model = Policy.validate(readJSON(file)); return { file, model: { ...model, init: init(model) }, sha256: crypto.createHash('sha256').update(JSON.stringify(model)).digest('hex') }; };
-const REWARD_VERSION = 'league-simulated-values/17';
+const REWARD_VERSION = 'league-survival-offense/18';
 const REWARDS = Object.freeze({ win: 30, loss: -30, tower: 2, towerDamage: .008, large: 4, smallMonster: .8, energy: .01, kill: 2, death: -6, zoneDamage:-.02,
   damageReceived: -.002, emptySkill: -.25, invalidSkill: -.05, unnecessaryRecall: -.25, repeatRecall: -.04, interruptedRecall: -.15,
   spawnLoiterPerSecond: -.1, idlePerSecond: -.1, attackedFarmPerSecond: -.03, ignoredBossPerSecond: -.025, timePerSecond: -.01,
-  smallMonsterDamage: .003, farmPotential: .6, farmDamagePotential: .15, towerPotential: 1.5 });
+  smallMonsterDamage: .003, farmPotential: .6, farmDamagePotential: .15, towerPotential: 1.5,
+  healthPotential: 3, dangerPotential: 3, retreatPotential: 2, finishPotential: 1.5, heroDamage: .012 });
 const inControl = (p,slot,zone) => !!zone && (slot ? p.z-p.x : p.x-p.z) < zone.boundary;
 const territoryFraction = zone => Math.max(0,Math.min(1,1+(zone?.boundary || 0)/(2*World.MAP.half))) ** 2;
 const energyCap=()=>-World.CONTROL_BOUNDARY_MIN/World.CFG.energyShrink;
@@ -19,8 +20,8 @@ const economicWeight=energy=>energy>=energyCap()?0:.25+.75*Math.max(0,1-energy/e
 function validateOptions(options) {
   if (!Number.isFinite(options.maxSeconds) || options.maxSeconds < 1 || options.maxSeconds > 86400) throw Error('maxSeconds must be 1..86400');
   if (!Number.isInteger(options.intervalTicks) || options.intervalTicks < 3 || options.intervalTicks > 9) throw Error('intervalTicks must be 3..9');
-  const farm=options.farmStartFraction??0,push=options.pushStartFraction??0;
-  if (![farm,push].every(v=>Number.isFinite(v)&&v>=0&&v<=1)||farm+push>1) throw Error('Invalid strategic start fractions');
+  const fractions = ['farmStartFraction','pushStartFraction','retreatStartFraction','finishStartFraction'].map(k => options[k] ?? 0);
+  if (!fractions.every(v=>Number.isFinite(v)&&v>=0&&v<=1)||fractions.reduce((a,b)=>a+b,0)>1) throw Error('Invalid strategic start fractions');
 }
 class Pool {
   constructor(config) { this.counter = 0; this.categoryCounters = {latest:0,history:0,algorithm:0}; this.cache = new Map(); this.update(config); }
@@ -58,8 +59,13 @@ class LeagueEnvironment {
     Object.assign(this.fixture,forced);
     if (!this.model.characters.includes(this.fixture.character) || ![0,1].includes(this.fixture.slot)) throw Error('Invalid forced fixture');
     const draw=this.random();
-    this.scenario=forced.scenario || (draw<(this.options.farmStartFraction||0)?'farm-start':draw<(this.options.farmStartFraction||0)+(this.options.pushStartFraction||0)?'push-9':'match');
-    if (!['match','farm-start','farm-spawn','push-9','push-spawn-9'].includes(this.scenario)) throw Error('Invalid strategic scenario');
+    let remaining = draw, scenario = 'match';
+    for (const [key, name] of [['farmStartFraction','farm-start'],['pushStartFraction','push-9'],['retreatStartFraction','retreat-duel'],['finishStartFraction','finish-duel']]) {
+      remaining -= this.options[key] || 0;
+      if (remaining < 0) { scenario = name; break; }
+    }
+    this.scenario=forced.scenario || scenario;
+    if (!['match','farm-start','farm-spawn','push-9','push-spawn-9','retreat-duel','finish-duel'].includes(this.scenario)) throw Error('Invalid strategic scenario');
     this.farmDamageCredit=new Map();
     this.lastHeroHit = -100; this.lastBossHit = -100; this.spawnGraceUntil = 5; this.totalReward = 0; const f = this.fixture;
     this.metrics = { scenario:this.scenario, opponent: f.category, opponentFile: f.entry?.file || null, opponentSha256: f.entry?.sha256 || null,
@@ -99,10 +105,21 @@ class LeagueEnvironment {
         const tower=Object.values(this.game.state.towers).filter(t=>t.slot!==p.slot&&!t.dead).sort((a,b)=>Math.hypot(a.x,a.z)-Math.hypot(b.x,b.z))[0];
         const length=Math.hypot(tower.x,tower.z),distance=p.cfg.atkRange+World.CFG.tower.radius+2;
         if(this.scenario==='push-9')Object.assign(p,{x:tower.x-tower.x/length*distance,z:tower.z-tower.z/length*distance,target:null,keys:null,dest:null});
+      }else if(['retreat-duel','finish-duel'].includes(this.scenario)){
+        const enemy=this.game.state.players['league-opponent'],sign=p.slot?-1:1;
+        this.game.state.environment.totals=[100,100];
+        const clear={target:null,keys:null,dest:null,recall:0};
+        Object.assign(p,clear,{x:0,z:8*sign,hp:p.cfg.maxHp*(this.scenario==='retreat-duel'?.2+this.random()*.25:1)});
+        const d=p.cfg.atkRange+.5+this.random();
+        Object.assign(enemy,clear,{x:sign*d*Math.SQRT1_2,z:sign*(8-d*Math.SQRT1_2),hp:this.scenario==='finish-duel'?p.cfg.atkDmg*(.25+this.random()*.5):enemy.cfg.maxHp*.8});
+        this.game.input(enemy.id,'chase',{id:p.id});
+        if(this.scenario==='retreat-duel')this.game.input(p.id,'chase',{id:enemy.id});
       }
       this.memory={};this.cues=[];this.combat=[];
     }
     this.state = this.game.observe('league-learner');this.startedAt=this.state.time;
+    this.startedLow = this.state.players.find(p=>p.id==='league-learner').hp < this.game.state.players['league-learner'].cfg.maxHp*.5;
+    this.metrics.recovered = false;
     this.previousPotential = this.potential(); return this.observation();
   }
   potential() {
@@ -112,7 +129,15 @@ class LeagueEnvironment {
     const farm=this.state.monsters.filter(m=>!m.large&&!m.dead&&inControl(m,p.slot,own));
     const farmPhi=farm.reduce((best,m)=>Math.max(best,REWARDS.farmPotential*Math.max(0,1-Math.hypot(m.x-p.x,m.z-p.z)/60)+REWARDS.farmDamagePotential*(1-m.hp/m.maxHp)),0);
     const towerPhi=towers.length ? REWARDS.towerPotential * Math.max(0, 1 - Math.min(...towers.map(t => Math.hypot(t.x-p.x,t.z-p.z))) / 90) : 0;
-    return towerPhi+(p.hp/p.maxHp)**2*farmPhi*economicWeight(own?.energy||0);
+    const hp=p.hp/p.maxHp, home=World.MAP.spawns[p.slot];
+    const enemies=this.state.players.filter(e=>e.slot!==p.slot&&e.vis&&!e.dead&&Number.isFinite(e.x));
+    const threats=[...enemies,...this.state.robots.filter(e=>e.slot!==p.slot&&!e.dead),...towers];
+    const danger=threats.reduce((risk,e)=>Math.max(risk,Math.max(0,1-Math.hypot(e.x-p.x,e.z-p.z)/12)),0);
+    const finish=enemies.reduce((best,e)=>Math.max(best,Math.min(1,World.configFor(p.character).atkDmg/Math.max(1,e.hp))*Math.max(0,1-Math.hypot(e.x-p.x,e.z-p.z)/24)),0);
+    // Discounted potential differences pay for progress, never for toggling orders.
+    return hp**2*(towerPhi+farmPhi*economicWeight(own?.energy||0)+REWARDS.finishPotential*finish)
+      +REWARDS.healthPotential*hp-REWARDS.dangerPotential*(1-hp)**2*danger
+      +REWARDS.retreatPotential*(1-hp)**2*Math.max(0,1-Math.hypot(home.x-p.x,home.z-p.z)/85);
   }
   observation() {
     const actor = 'league-learner';
@@ -155,6 +180,7 @@ class LeagueEnvironment {
       const ours = e.slot === before.slot, owned = e.source === 'league-learner' || e.owner === 'league-learner';
       if (e.kind === 'damage') {
         if (e.source === 'league-learner') directDealt += e.amount;
+        if (owned && e.targetKind === 'player' && e.targetSlot !== before.slot) reward += e.amount * REWARDS.heroDamage;
         if(owned&&e.targetKind==='monster'&&!e.large){
           const monster=beforeState.monsters.find(m=>m.id===e.target);
           const credit=this.farmDamageCredit.get(e.target)||{paid:0,maxHp:monster?.maxHp||100};
@@ -183,6 +209,7 @@ class LeagueEnvironment {
       else if (e.targetKind === 'player') { this.metrics[e.targetSlot === before.slot ? 'deaths' : 'kills']++; reward += e.targetSlot === before.slot ? REWARDS.death : REWARDS.kill; }
     }
     const after = this.state.players.find(p => p.id === 'league-learner'), energy = Math.max(0, after.energy - before.energy);
+    if(this.startedLow&&!this.metrics.deaths&&!after.dead&&after.hp>=after.maxHp*.8)this.metrics.recovered=true;
     if(!after.dead&&inControl(after,1-after.slot,this.state.control.find(z=>z.slot!==after.slot)))this.metrics.enemyZoneSeconds+=dt;
     const afterEconomy=this.state.control.find(z=>z.slot===before.slot)?.energy||0;
     const usefulEnergy=Math.max(0,Math.min(energyCap(),afterEconomy)-Math.min(energyCap(),ownEconomy));

@@ -673,3 +673,42 @@ JavaScript 251件・Python 22件が通り、ブラウザーのCPU戦とシリー
 これは模倣学習後の最初の5キャラPPO候補で、v14を上回る対戦モデルと確認したものではない。別シードでもルシアは0勝2敗、ダリウス等には時間切れが残る。有限の10試合での改善を一般的な勝率の保証にはしない。`release-evaluation.json`には温度1で悪化した結果と温度0.3での比較を分けて保存した。
 
 Python 28件と学習関連JavaScript 27件が通り、全体のJavaScriptは246件成功・既存の戦闘期待値不一致8件失敗。学習開始時と推論用モデルの公開ルールが一致すること、候補スコアのPython/JavaScript差が約2.8e-7であることを確認した。
+
+### v15：撤退・撃破・攻城の追加学習
+
+復活時間は`5 + 両チームの破壊済みタワー数の合計 * 2.5`秒。死亡時に確定し、カウントダウン中のタワー破壊では延長しない。観測の`respawnTime`と画面の説明もこの式を使う。
+
+リーグ学習に`retreat-duel`（HP20〜45%で敵を追跡中）と`finish-duel`（近くの敵が通常攻撃1回で倒せるHP）を追加した。キャラ・陣営・対戦相手の割り当ては既存のリーグと同じ。`--retreat-start-fraction`と`--finish-start-fraction`で開始割合を指定でき、ファーム・攻城開始との合計は1以下にする。
+
+報酬`league-survival-offense/18`では、体力・敵から離れる進捗・回復地点への接近・倒せる敵への接近を割引付きポテンシャル差分で評価する。敵キャラへの実ダメージも加点する。低HP時の攻城接近報酬を抑え、危険な攻城と回復の優先順位を学べるようにした。
+
+リーグの入力候補には、追跡を解除する移動命令と退避用Eを組み合わせた候補を追加。従来のE単独では攻撃中の追跡が残る場合があった。追加候補も学習スコアで選び、低HPだからという理由で行動を強制的に上書きしない。
+
+```powershell
+& "$env:TEMP\axegozen-node-runtime\node.exe" scripts/minion-v1.js league --model datas/models/minion-v1-v15-balanced-ppo/latest-model.json --output datas/models/minion-v1-v15-tactics-ppo --history datas/models/minion-v1-v14-balanced/model.json --history datas/models/minion-v1-v15-balanced-ppo/model.json --python D:\git\python\python.exe --updates 64 --steps 128 --envs 10 --max-seconds 60 --eval-games 10 --eval-seconds 300 --snapshot-every 8 --farm-start-fraction .15 --push-start-fraction .25 --retreat-start-fraction .25 --finish-start-fraction .25 --seed 20261122
+
+# 同じ5キャラを両陣営で検証する。場面別の診断と通常開始の勝率は分ける。
+& D:\git\python\python.exe scripts/evaluate-minion-strategy.py --node "$env:TEMP\axegozen-node-runtime\node.exe" --model datas/models/minion-v1-v15-balanced-ppo/model.json --model datas/models/minion-v1-v15-tactics-ppo/model.json --output datas/models/minion-v1-v15-tactics-ppo/tactics-comparison.json --games 10 --seconds 30 --scenarios retreat-duel finish-duel push-9 --temperature .3 --seed 21261122
+```
+
+追加PPOだけでは安全な行動に偏り、攻城が弱まる途中モデルがあったため、固定した24更新モデルから既存のシミュレーション価値学習も実行する。各場面で全入力候補を同じスナップショットから8秒先まで試し、実際のゲーム報酬を学習する。教師が撤退・攻撃を指定する方式ではない。
+
+```powershell
+& "$env:TEMP\axegozen-node-runtime\node.exe" scripts/minion-lookahead-data.js --model datas/models/minion-v1-v15-tactics-ppo/checkpoint-00024.json --output datas/lookahead/v15-tactics.jsonl --seeds 2 --horizon 8 --seed 20261123 --scenarios retreat-duel,finish-duel,push-9 --prefixes 0 --composed
+& D:\git\python\python.exe scripts/fit-minion-lookahead.py --model datas/models/minion-v1-v15-tactics-ppo/checkpoint-00024.json --data datas/lookahead/v15-tactics.jsonl --output datas/models/minion-v1-v15-tactics-values --epochs 240 --temperature .3 --composed --seed 20261124
+```
+
+読み込み用の追加学習モデルは`datas/models/minion-v1-v15-tactics-values/model.json`。ブラウザーの「学習モデルを読み込む」でこのファイルを選ぶ。元のv15は上書きしていない。PPOは64更新・81,920遷移・270完了試合まで実行し、下流の価値学習には固定した24更新モデルを使用した。60場面・4,665候補の実行結果を240エポック学習し、別グループの検証で選ばれた20エポックを保存している。推論温度は0.3。
+
+学習データと異なるシード31261122で、各場面20試合・30秒、5キャラ両陣営を比較した（`holdout-tactics.json`）。
+
+| 指標 | 元のv15 | 追加学習モデル |
+| --- | ---: | ---: |
+| 低HP開始から死亡前にHP80%以上へ回復 | 6/20 | 15/20 |
+| 撃破開始場面で敵キャラを撃破した試合 | 8/20 | 13/20 |
+| 攻城開始場面で敵タワーにダメージを与えた試合 | 3/20 | 13/20 |
+| 攻城開始場面の平均タワーダメージ | 14.55 | 56.35 |
+
+別途、通常開始・各300秒上限・同じ相手とシードの10試合も比較した（`normal-match-comparison.json`）。勝/敗/分は0/5/5→0/2/8、1試合の平均死亡数は1.8→1.0、平均敵タワーダメージは32.9→53.25、平均破壊数は0→0.2。勝利はどちらも0で、平均停止時間は5.48→21.54秒へ悪化しているため、全般的な強さや勝率の改善を保証するモデルとはしない。今回の3つの判断改善を確認した候補として保存する。
+
+JavaScriptは247件成功、変更前と同じ10件が失敗。Pythonは28件成功。選択モデルのPython/JavaScript候補スコア差は約1.1e-7で、保存された公開ルールもゲーム本体と一致する。`release-evaluation.json`に評価結果・モデルハッシュ・評価後の表示名だけの修正を記録した。

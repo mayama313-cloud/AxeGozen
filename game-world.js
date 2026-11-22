@@ -11,7 +11,7 @@ const CFG = {
   leapRange: 8, leapTime: 0.45, leapDmg: 45, leapStun: 1, leapHitRange: 2.4,
   windTime: 3, windMultiplier: 1.3,
   magicRange: 14, magicSpeed: 45, magicRadius: 0.35, magicPull: 6, magicStun: 1.5, magicDmg: 30,
-  respawn: 5, respawnPerTower: 5,
+  respawn: 5, respawnPerTower: 2.5,
   controlHeal: 8, controlDamage: 12, energyShrink: 0.15, energyInterval: 8, largeMonsterEnergy: 200,
 };
 const R = CFG.robot;
@@ -141,6 +141,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   const isAlexMinion = e => isRobot(e) && (e.character || players[e.owner]?.character) === 'alex';
   const isSolidSummon = e => isRobot(e) && ['alex', 'bastion'].includes(e.character || players[e.owner]?.character);
   const destroyed = slot => Object.values(towers).filter(t => t.slot === slot && t.dead).length;
+  const respawnTime = () => CFG.respawn + (destroyed(0) + destroyed(1)) * CFG.respawnPerTower;
   const updateBush = e => { e.bush = BUSHES.findIndex(b => dist(e, b) < b.r); };
   function canSee(slot, e) {
     if (e.slot === slot || e.tower) return true;
@@ -417,7 +418,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
       return dealt;
     }
     if (isRobot(b)) { delete robots[b.id]; return dealt; }
-    b.respawn = CFG.respawn + destroyed(b.slot) * CFG.respawnPerTower;
+    b.respawn = respawnTime();
     b.dest = null; b.target = null; b.moving = false;
     const credit = isRobot(a) ? players[a.owner] : a.tower || a.monster ? null : a;
     if (credit) credit.kills++;
@@ -1112,7 +1113,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
           const s = { id: p.id, slot: p.slot, character: p.character, confirmed: p.confirmed, maxHp: p.cfg.maxHp, hp: r2(p.hp), dead: p.dead, kills: p.kills, energy: p.energy, vis, stun: r2(p.stun), recall: r2(p.recall), shield: r2(p.shield) };
           if (multi) Object.assign(s, { member: p.member, name: p.name, bot: p.bot });
           if (vis) Object.assign(s, { x: r2(p.x), z: r2(p.z), face: r2(p.face), moving: active() && p.moving, air: r2(p.air), speedBoost: r2(p.speedBoost), stealth: r2(p.stealth), warping: p.warp ? r2(p.warp.remaining) : 0, charging: !!p.charge, grabbing: !!p.grabbing, grabbed: !!p.held, flying: !!p.flight, radius: p.radius });
-          if (p === v) Object.assign(s, { aiming: p.aiming, qCd: r2(p.qCd), eCd: r2(p.eCd), cCd: r2(p.cCd), respawn: r2(Math.max(0, p.respawn)), safe: !p.dead && protectedUnit(p), respawnTime: CFG.respawn + destroyed(p.slot) * CFG.respawnPerTower,
+          if (p === v) Object.assign(s, { aiming: p.aiming, qCd: r2(p.qCd), eCd: r2(p.eCd), cCd: r2(p.cCd), respawn: r2(Math.max(0, p.respawn)), safe: !p.dead && protectedUnit(p), respawnTime: respawnTime(),
             inputs: { keys: p.keys && { ...p.keys }, dest: p.dest && { x: p.dest.x, z: p.dest.z }, target: p.target } });
           return s;
         }),

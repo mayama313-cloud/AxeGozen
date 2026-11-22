@@ -10,10 +10,13 @@ import subprocess
 def main():
     p=argparse.ArgumentParser();p.add_argument('--node',required=True);p.add_argument('--model',type=Path,action='append',required=True)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--games',type=int,default=8);p.add_argument('--seconds',type=float,default=60);p.add_argument('--seed',type=int,default=90261216)
-    p.add_argument('--scenarios',nargs='+',choices=['match','farm-start','push-9'],default=['farm-start','push-9'])
+    p.add_argument('--scenarios',nargs='+',choices=['match','farm-start','push-9','retreat-duel','finish-duel'],default=['farm-start','push-9'])
     p.add_argument('--temperature',type=float)
     args=p.parse_args()
-    if not 8<=args.games<=128 or args.games%8 or not 1<=args.seconds<=900:raise ValueError('Invalid strategy diagnostic')
+    if not 8<=args.games<=128 or not 1<=args.seconds<=900:raise ValueError('Invalid strategy diagnostic')
+    for file in args.model:
+        characters=json.loads(file.read_text(encoding='utf-8-sig'))['characters']
+        if args.games%(2*len(characters)):raise ValueError('games must cover every model character on both sides equally')
     root=Path(__file__).resolve().parent.parent
     pool={'latest':str(root/'datas/models/minion-v1-v12-activity/model.json'),'history':[str(root/'datas/models/minion-v1-v11-combat/model.json'),str(root/'datas/models/minion-v1-v8-offense/model.json')],'weights':{'latest':4,'history':3,'algorithm':3}}
     def evaluate(file,scenario):
@@ -29,7 +32,8 @@ def main():
         summary={'model':str(file.resolve()),'sha256':hashlib.sha256(file.read_bytes()).hexdigest(),'intervalTicks':interval,'temperatureOverride':args.temperature,'scenario':scenario,'games':n,
                  'wins':sum(e['winner']==1 for e in rows),'losses':sum(e['winner']==0 for e in rows),'draws':sum(e['winner'] is None for e in rows),
                  'farmSuccesses':sum(e['ownSmallKills']>0 for e in rows),'towerAttackSuccesses':sum(e['towerDamage']>0 for e in rows),
-                 'mean':{k:sum(e[k] for e in rows)/n for k in ['ownSmallKills','smallDamage','towerDamage','towers','energy','enemyZoneSeconds','deaths','idleSeconds']}}
+                 'recoveries':sum(e.get('recovered',False) for e in rows),'finishSuccesses':sum(e['kills']>0 for e in rows),
+                 'mean':{k:sum(e[k] for e in rows)/n for k in ['kills','ownSmallKills','smallDamage','towerDamage','towers','energy','enemyZoneSeconds','deaths','idleSeconds']}}
         print(json.dumps(summary),flush=True);return {**summary,'episodes':rows}
     rows=[]
     with ThreadPoolExecutor(max_workers=4) as executor:

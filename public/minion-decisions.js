@@ -131,6 +131,12 @@
     if (state.phase !== 'playing' || me.dead || me.stun > 0 || me.air > 0 || me.warping || me.charging || me.grabbing || me.grabbed || me.flying) return result;
     add({ event: 'noop' }); add({ event: 'move', data: { x: home.x, z: home.z } }, home, 'home');
     add({ event: 'recall' }); if (me.aiming) add({ event: 'cancelLeap' });
+    if (league) {
+      // A retreat is an available input combination, scored by the learned policy.
+      // In particular, E must not keep a stale offensive chase order alive.
+      const escape = World.retreatInputs(state, actor, { retreat: true });
+      if (escape) add({ ...escape[escape.length - 1], inputs: escape }, { ...home, ...escape[0].data }, 'home');
+    }
     const directions = Array.from({ length: 8 }, (_, i) => ({ x: Math.sin(i * Math.PI / 4), z: Math.cos(i * Math.PI / 4) }));
     directions.forEach(data => add({ event: 'steer', data, cancelChase: true }));
     if (league) {

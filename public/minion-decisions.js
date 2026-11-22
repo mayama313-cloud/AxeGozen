@@ -14,6 +14,7 @@
     if (p.scope && p.scope !== 'visible-encounter/1') throw Error('戦闘判断の適用範囲が不正です。');
     if (p.contextSize !== undefined && (!Number.isInteger(p.contextSize) || p.contextSize < 1024 || p.contextSize > 2048 || w.contextW?.length !== h || w.contextW.some(r => r.length !== p.contextSize || r.some(v => !Number.isFinite(v))))) throw Error('全体観測の重みが不正です。');
     if (p.inferenceTemperature !== undefined) temperature(p);
+    if(p.actionProtocol!==undefined&&p.actionProtocol!=='composed-inputs/14')throw Error('Unknown learned input protocol');
   }
   function temperature(p, override = undefined) {
     const value = override ?? p.inferenceTemperature ?? (p.inputSize === LEAGUE_SIZE ? DEFAULT_INFERENCE_TEMPERATURE : 0);
@@ -34,15 +35,24 @@
   function context(p, observation) {
     if (!p.contextSize) return null;
     if (observation?.length !== p.contextSize) throw Error('全体観測の長さが一致しません。');
-    return p.weights.contextW.map(row => row.reduce((s, w, j) => s + w * observation[j], 0));
+    return p.weights.contextW.map(row => {
+      let sum=0;for(let j=0;j<row.length;j++)sum+=row[j]*observation[j];return sum;
+    });
   }
   function score(p, x, conditioning = null) {
     const w = p.weights;
-    return w.outputW.reduce((s, v, i) => s + v * Math.tanh(w.hiddenW[i].reduce((s, a, j) => s + a * x[j], w.hiddenB[i] + (conditioning?.[i] || 0))), w.outputB);
+    let total=w.outputB;
+    for(let i=0;i<w.outputW.length;i++){
+      const row=w.hiddenW[i];let sum=w.hiddenB[i]+(conditioning?.[i]||0);
+      for(let j=0;j<row.length;j++)sum+=row[j]*x[j];
+      total+=w.outputW[i]*Math.tanh(sum);
+    }
+    return total;
   }
   function candidates(model, state, actor, base, memory = {}) {
     const me = state.players.find(p => p.id === actor), cfg = World.configFor(me.character), sign = me.slot ? -1 : 1, home = World.MAP.spawns[me.slot];
     const league = model.tacticalPolicy?.inputSize === LEAGUE_SIZE;
+    const composed=model.tacticalPolicy?.actionProtocol==='composed-inputs/14';
     if (league) {
       const prior = memory.leagueSignals;
       if (!prior || prior.tick !== state.tick) memory.leagueSignals = { tick: state.tick, hp: me.hp,
@@ -138,26 +148,30 @@
     for (const t of targets) {
       add({ event: 'chase', data: { id: t.id } }, t, t.kind);
       add({ event: 'move', data: { x: t.x, z: t.z } }, t, t.kind);
-      if (me.qCd <= 0) add({ event: 'q', data: { x: t.x, z: t.z } }, t, t.kind);
-      if (me.cCd <= 0) add({ event: 'c', data: { x: t.x, z: t.z } }, t, t.kind);
+      const skill=event=>({event,data:{x:t.x,z:t.z},...(composed?{inputs:[{event:'steer',data:{x:0,z:0}},{event:'chase',data:{id:t.id}},{event,data:{x:t.x,z:t.z}}]}:{})});
+      if (me.qCd <= 0) add(skill('q'), t, t.kind);
+      if (me.cCd <= 0) add(skill('c'), t, t.kind);
     }
     if (me.cCd <= 0 && ['alex', 'bastion', 'lucia'].includes(me.character)) add({ event: 'c' });
     if (me.eCd <= 0) {
       if (['mira', 'bastion'].includes(me.character) || me.character === 'alex' && !me.aiming) add({ event: 'dash' });
-      if (['alex', 'darius', 'lucia'].includes(me.character) && (me.character !== 'alex' || me.aiming)) {
+      if (['alex', 'darius', 'lucia'].includes(me.character) && (me.character !== 'alex' || me.aiming || composed)) {
         const anchors = [{ ...home, kind: 'home' }, ...targets, ...directions.map(v => ({ x: me.x + v.x * cfg.leapRange * .9, z: me.z + v.z * cfg.leapRange * .9, kind: 'point' }))];
         const blocks = [...World.MAP.obst, ...state.towers.filter(t => !t.dead).map(t => ({ ...t, r: World.CFG.tower.radius }))];
         for (const t of anchors) {
           const length = distance(me, t), scale = Math.min(1, cfg.leapRange * .95 / (length || 1)), to = { x: me.x + (t.x - me.x) * scale, z: me.z + (t.z - me.z) * scale };
           if (length < .1 || !World.validLanding(me, to, { range: cfg.leapRange, radius: cfg.radius, half: World.MAP.half, blocks, safe: { ...safe, r: World.CFG.safeRadius }, travel: me.character === 'alex' })) continue;
-          add({ event: me.character === 'alex' ? 'leap' : 'dash', data: to }, { ...t, ...to }, t.kind);
+          const action={ event: me.character === 'alex' ? 'leap' : 'dash', data: to };
+          if(composed&&me.character==='alex'&&!me.aiming)action.inputs=[{event:'dash'},{event:'leap',data:to}];
+          add(action, { ...t, ...to }, t.kind);
         }
       }
     }
     return result;
   }
   function choose(model, state, actor, base, memory = {}, observation = null, draw = null) {
-    const choices = candidates(model, state, actor, base, memory), conditioning = context(model.tacticalPolicy, observation);
+    const choices = candidates(model, state, actor, base, memory);
+    const conditioning = context(model.tacticalPolicy,typeof observation==='function'?observation():observation);
     const best = select(choices.map(c => score(model.tacticalPolicy,c.x,conditioning)),temperature(model.tacticalPolicy),draw);
     return { ...choices[best].action, tacticalChoice: best };
   }

@@ -13,18 +13,20 @@ const history=process.argv.flatMap((v,i)=>v==='--history'?[path.resolve(process.
 if(!history.length)history.push(path.resolve('datas/models/minion-v1-v10-bush-adapter/model.json'),path.resolve('datas/models/minion-v1-v8-offense/model.json'));
 const games=Number(arg('games','16')),maxSeconds=Number(arg('max-seconds','900')),seed=Number(arg('seed','90261205'));
 const sample=process.argv.includes('--sample');
+const scenario=arg('scenario','match');
+if(!['match','farm-start','push-9'].includes(scenario))throw Error('Invalid scenario');
 const temperatureOverride=process.argv.includes('--temperature')?Number(arg('temperature',null)):sample?1:undefined;
 if(temperatureOverride!==undefined)Decisions.temperature({},temperatureOverride);
 if(!Number.isInteger(games)||games<4||games>512||!Number.isInteger(seed))throw Error('Invalid evaluation settings');
 const poolConfig={latest:reference,history,weights:{latest:4,history:3,algorithm:3}};
-const report={protocol:'full-match-league/12',seed,games,maxSeconds,pool:poolConfig,inference:{temperatureOverride:temperatureOverride??null},
+const report={protocol:'full-match-league/12',seed,games,maxSeconds,scenario,pool:poolConfig,inference:{temperatureOverride:temperatureOverride??null},
   definition:'Wins require actual tower destruction; time limits count as draws. This is a limited evaluation, not a strength guarantee.',models:[]};
 for(const file of [reference,modelPath]){
   const model=Policy.validate(readJSON(file)),pool=new Pool(poolConfig),episodes=[];
   for(let i=0;i<games;i++){
     let rng=(seed+i*997 ^ 12345)>>>0;const rand=()=>{rng=(Math.imul(rng,1664525)+1013904223)>>>0;return rng/4294967296;};
     const env=new LeagueEnvironment(model,pool,{seed:seed+i*997,maxSeconds,intervalTicks:model.decisionIntervalTicks||3});
-    let observation=env.reset({character:model.characters[i%model.characters.length],slot:Math.floor(i/model.characters.length)%2});
+    let observation=env.reset({character:model.characters[i%model.characters.length],slot:Math.floor(i/model.characters.length)%2,scenario});
     for(;;){
       const conditioning=Decisions.context(model.tacticalPolicy,observation.x);
       const scores=env.choices.map(c=>Decisions.score(model.tacticalPolicy,c.x,conditioning));

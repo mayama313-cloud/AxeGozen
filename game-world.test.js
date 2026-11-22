@@ -993,10 +993,11 @@ test('Lucia Q pierces units, enemy and allied towers and rocks, hitting each ene
   robots.guard = { id: 'guard', owner: q.id, character: 'bastion', slot: 1, x: 3, z: 0, radius: 0.4,
     hp: 80, maxHp: 80, life: 20, cfg: { ...CFG.robot, speed: 0 }, atkCd: 100, stun: 0, bush: -1 };
   const enemyTower = towers['t1-2'], allyTower = towers['t0-2'];
+  const enemyTowerHp=enemyTower.hp,allyTowerHp=allyTower.hp;
   place(enemyTower, 5, 0); place(allyTower, 7, 0);
   a.send('q', { x: 12, z: 0 }); ticks(match, TICK);
-  assert.equal(robots.guard.hp, 30); assert.equal(enemyTower.hp, 250);
-  assert.equal(allyTower.hp, 300); assert.equal(q.hp, 150); assert.equal(p.hp, 115);
+  assert.equal(robots.guard.hp, 30); assert.equal(enemyTower.hp, Math.max(0,enemyTowerHp-50));
+  assert.equal(allyTower.hp, allyTowerHp); assert.equal(q.hp, 150); assert.equal(p.hp, 115);
   assert.equal(Object.keys(match.state.projectiles).length, 0);
 });
 
@@ -1091,8 +1092,9 @@ test('Mira basic attacks travel before hitting players and towers without scout 
   ticks(match, 5); assert.equal(q.hp, 185); assert.equal(q.stun, 0); assert.equal(q.pull, null);
   p.target = null; p.atkCd = 0;
   const tower = towers['t1-2']; place(p, tower.x-6, tower.z);
+  const towerHp=tower.hp;
   a.send('chase', { id: tower.id }); ticks(match, 7);
-  assert.equal(tower.hp, 285);
+  assert.equal(tower.hp, Math.max(0,towerHp-p.cfg.atkDmg));
 });
 
 test('control zones heal only their owner, damage invaders and preserve spawn protection', () => {

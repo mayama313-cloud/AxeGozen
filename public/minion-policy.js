@@ -276,10 +276,12 @@
       action.cancelChase = Math.hypot(...point) < .01 || (orderDraw === null ? probability >= .5 : orderDraw < probability);
     }
     if (objective?.fallbackInputs) action.prefixInputs = objective.fallbackInputs;
-    if (model.tacticalPolicy) return (root.MinionDecisions || require('./minion-decisions')).choose(model, observation, actor, action, memory, observationFeatures, decisionDraw ?? draw);
+    if (model.tacticalPolicy) return (root.MinionDecisions || require('./minion-decisions')).choose(model, observation, actor, action, memory,
+      model.tacticalPolicy.contextSize?()=>features(observation,actor,model.init,memory,model.featureVersion):observationFeatures, decisionDraw ?? draw);
     return escapeAction(action) || action;
   }
   function commands(model, state, actor, action) {
+    if(action.inputs)return action.inputs;
     if (action.objectiveInputs) return action.objectiveInputs;
     if (action.prefixInputs) return [...action.prefixInputs, ...commands(model, state, actor, { ...action, prefixInputs: null })];
     if (action.event === 'noop') return [];
@@ -333,6 +335,11 @@
     act.observe = event => cues.push(event);
     act.observeState = observeState;
     act.reset = () => { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = initialSeed >>> 0; lastTick = -1; lastDecisionTick = -Infinity; };
+    act.snapshot=()=>structuredClone({memory,cues,seed,lastTick,lastDecisionTick});
+    act.restore=saved=>{
+      const state=structuredClone(saved);for(const key of Object.keys(memory))delete memory[key];Object.assign(memory,state.memory);
+      cues=state.cues;seed=state.seed;lastTick=state.lastTick;lastDecisionTick=state.lastDecisionTick;
+    };
     return act;
   }
   const api = { VERSION, SIZE, EVENTS, DIRECTIONS, TACTICAL_VERSION, FARM_VERSION, DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION, PERCEPTION_VERSION, features, updateMemory, defenseContext, label, validate, forward, actionMask, decode, decide, commands, controller };

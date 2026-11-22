@@ -1,4 +1,4 @@
-const HALF = 30, TICK = 30, DT = 1 / TICK;
+const HALF = 30, TICK = 30, DT = 1 / TICK, CONTROL_BOUNDARY_MIN = -42;
 const CFG = {
   maxHp: 200, speed: 9, radius: 0.7,
   atkRange: 2.4, atkCd: 0.8, atkDmg: 10,
@@ -6,7 +6,7 @@ const CFG = {
   dashSpeed: 40, dashTime: 0.18, eCd: 3, cCd: 8,
   robot: { hp: 40, dmg: 5, atkCd: 0.7, atkRange: 1.8, speed: 7, radius: 0.4, aggro: 9, leash: 14, life: 20, max: 5, batch: 3 },
   safeRadius: 4, safeHeal: 80,
-  tower: { hp: 300, radius: 1.1, count: 5, range: 7, dmg: 5, atkCd: 1 },
+  tower: { hp: 100, radius: 1.1, count: 5, range: 7, dmg: 5, atkCd: 1 },
   recallTime: 3, inputTimeout: 0.35,
   leapRange: 8, leapTime: 0.45, leapDmg: 45, leapStun: 1, leapHitRange: 2.4,
   windTime: 3, windMultiplier: 1.3,
@@ -125,7 +125,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   const environment = { enabled: true, totals: [0, 0] };
   let energySeq = 0, energyTimer = 0;
   const camps = [{ x: 0, z: 3, large: true }, ...[-1, 1].flatMap(side => [-7, 0, 7].map(z => ({ x: side * 23, z, large: false })))].map((c, i) => ({ ...c, id: `monster-${i}`, timer: 5 }));
-  const boundary = slot => Math.max(-42, -environment.totals[1 - slot] * CFG.energyShrink) || 0;
+  const boundary = slot => Math.max(CONTROL_BOUNDARY_MIN, -environment.totals[1 - slot] * CFG.energyShrink) || 0;
   const inControl = (e, slot) => (slot === 0 ? e.x - e.z : e.z - e.x) < boundary(slot);
   function award(a, amount) {
     const p = isRobot(a) ? players[a.owner] : players[a.id];
@@ -862,6 +862,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     const control = policyFor(p);
     if (control) {
       p.thinkTime = 0.1;
+      if(control.externalInputs)return;
       for (const action of control(view(p)) || []) if (inputEvents.has(action.event)) command(p, action.event, action.data);
       return;
     }
@@ -1118,12 +1119,35 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
         projectiles: Object.values(projectiles).filter(b => canSee(v.slot, b)).map(b => ({ id: b.id, slot: b.slot, character: b.character, x: r2(b.x), z: r2(b.z), face: b.face, kind: b.kind })),
       };
   }
+  // In-memory simulation forks. Connections and input-handler closures retain their identity.
+  function snapshot() {
+    const playerData=Object.fromEntries(Object.entries(players).map(([id,p])=>[id,Object.fromEntries(Object.entries(p).filter(([k])=>!['socket','commands','controller','cfg'].includes(k)))]));
+    const controllerStates=Object.fromEntries(Object.values(players).filter(p=>policyFor(p)?.snapshot).map(p=>[p.id,policyFor(p).snapshot()]));
+    return structuredClone({version:1,tickNumber,elapsed,winner,phase,robotSeq,projectileSeq,killSeq,energySeq,energyTimer,controllerStates,
+      players:playerData,robots,towers,projectiles,monsters,energy,environment,camps});
+  }
+  function restore(saved) {
+    if(saved.version!==1||Object.keys(saved.players).sort().join('|')!==Object.keys(players).sort().join('|'))throw Error('Incompatible simulation snapshot');
+    const s=structuredClone(saved);
+    ({tickNumber,elapsed,winner,phase,robotSeq,projectileSeq,killSeq,energySeq,energyTimer}=s);
+    for(const [id,data] of Object.entries(s.players)){
+      const p=players[id];for(const key of Object.keys(p))if(!['socket','commands','controller','cfg'].includes(key))delete p[key];
+      Object.assign(p,data);p.cfg=configFor(p.character);
+    }
+    for(const [target,data] of [[robots,s.robots],[towers,s.towers],[projectiles,s.projectiles],[monsters,s.monsters],[energy,s.energy],[environment,s.environment]]){
+      for(const key of Object.keys(target))delete target[key];Object.assign(target,data);
+    }
+    camps.forEach((camp,i)=>Object.assign(camp,s.camps[i]));
+    for(const m of Object.values(monsters))m.home=camps.find(c=>c.id===m.id);
+    for(const [id,state] of Object.entries(s.controllerStates||{}))policyFor(players[id])?.restore?.(state);
+  }
   // サーバー内部の状態。Socket.IOのイベントからは直接変更できない。
   return { connect, addBot, tick, observe: id => players[id] ? view(players[id]) : null,
+    snapshot,restore,
     input: (id, event, data) => { if (inputEvents.has(event) && players[id]) command(players[id], event, data); },
     empty: () => teamSizes ? Object.values(players).every(p => p.bot) : Object.keys(players).length === 0, state: { players, robots, towers, projectiles, monsters, energy, environment, camps } };
 }
 
-const ArenaWorld = { createMatch, CFG, MAP, TICK, CHARACTERS, characterFor, configFor, validLanding, retreatInputs };
+const ArenaWorld = { createMatch, CFG, MAP, TICK, CONTROL_BOUNDARY_MIN, CHARACTERS, characterFor, configFor, validLanding, retreatInputs };
 if (typeof module !== 'undefined' && module.exports) module.exports = ArenaWorld;
 else globalThis.ArenaWorld = ArenaWorld;

@@ -536,3 +536,70 @@ v12の候補方策は学習時に確率選択していたが、推論時は最�
 | タワーダメージ | 28.4 | 33.6 |
 
 これは活動量の診断で、勝率の改善を示す結果ではない。スポーン外の短い停止は0.88→1.56秒/分で、すべての種類の停止が減ったわけではない。不要なリコールも8ケース計0→8回となったが、リコールの連続再入力はどちらも0回。停止を完全に除去するルールは追加していない。全ケース・温度・乱数シードは`temperature-comparison.json`と`temperature-validation.json`に保存する。243件のJavaScriptテスト、21件のPythonテスト、ブラウザーのCPU戦・シリーズ戦で動作を確認した。
+
+## v13：ファームへの移動と攻城を学習する
+
+報酬版`league-useful-economy/15`では、自陣小型モンスターへの接近とHPを削る進捗、敵タワーへの接近を学習に使う。自陣ファームのポテンシャルは最大0.6の距離分と最大0.15の残HP分。タワーへの距離ポテンシャルは0.3から1.5に変更する。毎ステップは割引後のポテンシャル差だけを報酬へ加え、往復するだけで稼ぐ形にはしない。
+
+小型モンスターへ実際に与えたダメージにも+0.003/HPを与える。支払いは同一個体の最大HPまでで、回復させて殴り続ける稼ぎを防ぐ。最大HP100の小型なら最大+0.3。撃破+0.8とエネルギー分+0.08も維持する。自陣小型の撃破数`ownSmallKills`、敵領域内の小型撃破数`enemySmallKills`、実ダメージ`smallDamage`、敵領域内で過ごした秒数`enemyZoneSeconds`を記録する。
+
+エネルギーの実際の用途は相手領域の縮小で、現行ルールでは280で境界−42・表示9%に達し、それ以上は縮まらない。従来の無制限のエネルギー・狩り報酬は、上限後もファームし続ける誘因になっていた。版15では、エネルギー報酬を領域縮小に有効な増分`usefulEnergy`だけに限定する。小型撃破・削り・接近と単独の大型撃破の報酬は、残りの経済価値に合わせて減らし、上限で0にする。上記+0.8/+0.003/+0.08は経済価値が最大の時点の値。上限後も敵が得るはずのエネルギーを阻止できる大型の取り合いは別に評価し、タワー攻撃・破壊・勝敗の報酬は維持する。タワーへの接近ポテンシャルにHPの二乗を掛ける処理も外し、攻める際の小さな被弾を過大な不利益にしない。
+
+版14の最初の32更新では、通常開始300秒×8ケースで自陣小型撃破が平均3.375→8体に増えた一方、タワーダメージは34.5→19に減った。この候補`minion-v1-v13-strategy`を攻城改善版とは扱わず、上限後の経済報酬を直して`minion-v1-v13-effective-economy`へ追加学習する。
+
+学習開始状態は標準で通常試合50%、自陣キャンプ近く25%、敵領域9%で前方タワーの近く25%。ファーム開始位置は地形・タワー・安全地帯との衝突を検査する。9%は実際の表示式`(1 + boundary / 60)^2`とゲームのエネルギー・境界の規則で作る。領域9%は現行ルールの最小値であり、タワーのHP・ダメージ・操作条件は変更しない。どの開始状態も、その後は通常の対戦として続行する。既存の最新40%・過去30%・アルゴリズム30%とキャラ・陣営の交代も維持する。
+
+```powershell
+& "$env:TEMP\axegozen-node-runtime\node.exe" scripts/minion-v1.js league --model datas/models/minion-v1-v12-activity/latest-model.json --output datas/models/minion-v1-v13-new --python D:\git\python\python.exe --updates 128 --farm-start-fraction 0.25 --push-start-fraction 0.25
+
+# 特定の状況でv12と追加学習した候補を比較する。
+& D:\git\python\python.exe scripts/evaluate-minion-strategy.py --node "$env:TEMP\axegozen-node-runtime\node.exe" --model datas/models/minion-v1-v12-activity/model.json --model datas/models/minion-v1-v13-effective-economy/model.json --output datas/models/minion-v1-v13-effective-economy/strategy-comparison.json
+```
+
+通常の学習前後評価ではスポーンから試合を始める。`evaluate-minion-league.js --scenario farm-start`または`--scenario push-9`で開始場面を明示できる。指定しない場合は`match`。`evaluate-minion-strategy.py`は同一条件で全4キャラ・両陣営を診断するが、その成功率は試合全体の勝率とは別の指標。初期のファーム開始位置に地形と重なる不備が見つかった試行は停止し、元のv12から修正版を`minion-v1-v13-strategy`へ学習し直した。
+
+候補用の補助履歴を更新してから全体観測を計算する順序も、学習と実行で揃えた。既存のハッシュ観測を維持するため、領域の下限定数は`ArenaWorld.CONTROL_BOUNDARY_MIN`として公開し、観測対象の`CFG`には追加しない。既存v12モデルの設定観測との差が0であることを確認する。
+
+版15を追加24更新した`minion-v1-v13-effective-economy`も、通常開始300秒×8ケースでは直前の候補に対してタワーダメージが平均4.5→3.375で、攻城改善を確認できなかった。別の個別診断では、元のv12に対し敵領域9%でタワーへ攻撃したケースは4/8→5/8だが、平均タワーダメージは62.5→46.375。接触回数だけで改善成功とは扱わない。キャンプ近くからの自陣小型撃破も平均1.75→1.625で、今回の候補は不採用。`release-evaluation.json`と`strategy-comparison.json`に結果を保存し、元のモデルを保持する。
+
+今回の有効な追加学習は32+24更新、57,344遷移。248件のJavaScriptテストと21件のPythonテストが通る。報酬の不備と観測の更新順は修正したが、ファームと攻城の両立は未達であり、攻城が直ったモデルとしては提供しない。
+
+### v14：実ゲームの分岐から行動価値を学習する
+
+上記のv13試行後、同一局面から候補入力を実ゲームでそれぞれ試し、得られた報酬から行動価値を学習する方式を追加した。アルゴリズムの入力を正解ラベルにはしない。通常の推論ではニューラルネットワークが入力を選び、ファーム・撤退・攻城の優先順位を決める実行時ルールは追加しない。
+
+候補は移動・追跡・通常のスキル入力。`composed-inputs/14`では、スキル使用後も選んだ対象への追跡を続ける入力と、アレックスの照準開始→着地点指定を選択できる。プレイヤーと共通の入力処理、クールダウン、着地点判定を通す。
+
+`scripts/minion-lookahead-data.js`は開始位置・キャラクター・陣営・HPを変え、各候補を同じスナップショットから試す。基本設定では対象撃破・死亡・指定秒数で試行を終了するため、その後の長期的な結果まで保証する値ではない。`--follow-policy-after 0.2 --horizon 6`を付けると、最初の入力後は現モデルで行動を続ける別方式も試せる。データは必ず新しい出力名で保存する。
+
+`scripts/fit-minion-lookahead.py`はシミュレーション報酬を学習し、局面の組単位で分けた検証データで候補を選ぶ。`--prior-strength`は既存の学習済みモデルから急激に行動を変えることを抑える係数で、アルゴリズム教師の重みではない。今回の`v14-balanced`は128局面・9,718候補試行、12秒以内の試行、既存v12からの正則化0.5、隠れ層64、推論温度0.1を使用した。
+
+報酬版`league-simulated-values/17`では、タワー破壊+2、勝利+30、死亡−6、通常の被ダメージ−0.002/HPに加えて領域ダメージ−0.02/HP。タワー1本の報酬だけで無理な侵攻が有利になりすぎることを抑えた。領域が下限の9%になった後は、領域を縮められない追加ファームへの経済報酬を停止する。
+
+保存済みの分岐データから再学習する例：
+
+```powershell
+& D:\git\python\python.exe scripts/fit-minion-lookahead.py --model datas/models/minion-v1-v12-activity/model.json --data datas/lookahead/v14-balanced-training.jsonl --output datas/models/minion-v1-v14-my-run --epochs 400 --hidden 64 --composed --temperature 0.1 --prior-strength 0.5
+
+# 通常のスポーン開始から、実際のタワー全破壊まで比較。時間切れは引き分け。
+& D:\git\python\python.exe scripts/evaluate-minion-strategy.py --node "$env:TEMP\axegozen-node-runtime\node.exe" --model datas/models/minion-v1-v12-activity/model.json --model datas/models/minion-v1-v14-balanced/model.json --scenarios match --games 16 --seconds 900 --seed 90270103 --output datas/models/minion-v1-v14-balanced/my-evaluation.json
+```
+
+試行中にタワーHPが100へ変更されたため、v14の新旧比較はいずれもHP100で実施した。過去のHP300での結果とは混ぜない。攻撃だけ増えて死亡も増えた`v14-lookahead`・`v14-composed`、検証値が改善しなかった`v14-iterated`は不採用として記録した。追加収集した遭遇局面・対戦中局面・短い入力後の継続試行は、`v14-balanced`の学習には使用していない。
+
+採用ファイルは`datas/models/minion-v1-v14-balanced/model.json`。ロビーのCPUモデル読み込みで指定する。旧ファイルは上書きしない。
+
+通常開始8試合でv12の1勝2敗5分に対しv14は5勝1敗2分。その後モデルを固定し、別シード90270103で4対応キャラ・両陣営・16試合ずつ、各900秒を上限に比較した。対戦相手は固定のv12・v11・v8・アルゴリズム混合。
+
+| 別シード16試合の指標 | v12 | v14-balanced |
+| --- | ---: | ---: |
+| 勝／敗／時間切れ引き分け | 3／8／5 | 8／5／3 |
+| 自陣小型撃破／分 | 0.425 | 0.721 |
+| 敵タワーダメージ／分 | 20.16 | 53.17 |
+| 敵タワー破壊／分 | 0.169 | 0.516 |
+| 死亡／分 | 0 | 0.793 |
+| 停止時間の秒数／分 | 2.30 | 8.28 |
+
+依頼対象のファーム・攻城と試合の勝数が改善したため、今回は採用した。ただし死亡・停止時間は旧モデルより悪い。特にダリウスは別シード4試合で0勝2敗2分であり、全キャラで問題が解消したとは扱わない。試合時間が異なるので行動量は合計プレイ時間で正規化する。`release-evaluation.json`に採用根拠・悪化した指標・モデルとコードのハッシュを保存した。これは限られた対戦組み合わせでの結果で、一般的な勝率の保証ではない。
+
+JavaScript 251件・Python 22件が通り、ブラウザーのCPU戦とシリーズ完走も確認した。旧来の撤退・目的地優先ルールを呼ぶと例外になる状態でも動作する。PythonとJavaScriptの選択候補スコア差は約2.4e-7。

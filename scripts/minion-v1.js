@@ -143,7 +143,7 @@ function smoke() {
     histories.forEach(f => Policy.validate(readJSON(f)));
     const args = [path.join(__dirname,'train-minion-league.py'),'--model',initial,'--output',output,'--node',process.execPath];
     for (const file of histories) args.push('--history',file);
-    for (const [name,fallback] of Object.entries({ updates:'128',steps:'128',envs:'8','max-seconds':'600','interval-ticks':'6','snapshot-every':'8','history-size':'6',seed:'20261204','eval-games':'8','eval-seconds':'900','latest-weight':'4','history-weight':'3','algorithm-weight':'3','learning-rate':'.0003' })) args.push('--'+name,arg(name,fallback));
+    for (const [name,fallback] of Object.entries({ updates:'128',steps:'128',envs:'8','max-seconds':'600','interval-ticks':'6','snapshot-every':'8','history-size':'6',seed:'20261204','eval-games':'8','eval-seconds':'900','latest-weight':'4','history-weight':'3','algorithm-weight':'3','learning-rate':'.0003','farm-start-fraction':'.25','push-start-fraction':'.25' })) args.push('--'+name,arg(name,fallback));
     const result=spawnSync(arg('python','python'),args,{stdio:'inherit'});
     if (result.error || result.status !== 0) throw result.error || Error('リーグ学習に失敗しました。');
     const model=Policy.validate(readJSON(path.join(output,'model.json'))),probe=readJSON(path.join(output,'league-parity.json')),D=require('../public/minion-decisions');

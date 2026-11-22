@@ -24,6 +24,7 @@ class LeagueActor(nn.Module):
         super().__init__()
         p = model['tacticalPolicy']; w = p['weights']; hidden = p['hiddenSize']
         self.inference_temperature = p.get('inferenceTemperature')
+        self.action_protocol=p.get('actionProtocol')
         self.hidden = nn.Linear(WIDTH, hidden)
         self.context = nn.Linear(model['inputSize'], hidden, bias=False)
         self.output = nn.Linear(hidden, 1)
@@ -45,6 +46,7 @@ class LeagueActor(nn.Module):
                 'hiddenB': self.hidden.bias.detach().tolist(), 'contextW': self.context.weight.detach().tolist(),
                 'outputW': self.output.weight.detach().flatten().tolist(), 'outputB': float(self.output.bias.detach()[0])}}
         if self.inference_temperature is not None: result['inferenceTemperature'] = self.inference_temperature
+        if self.action_protocol is not None:result['actionProtocol']=self.action_protocol
         return result
 
 
@@ -75,9 +77,9 @@ def summarize(episodes):
     n = max(1, len(episodes))
     return {'games': len(episodes), 'wins': sum(e['winner'] == 1 for e in episodes), 'losses': sum(e['winner'] == 0 for e in episodes),
             'draws': sum(e['winner'] is None for e in episodes), 'opponents': groups,
-            'mean': {key: sum(e.get(key,0) for e in episodes)/n for key in ['seconds','towerDamage','towers','energy','smallKills','largeKills','deaths',
+            'mean': {key: sum(e.get(key,0) for e in episodes)/n for key in ['seconds','towerDamage','towers','energy','usefulEnergy','smallKills','ownSmallKills','enemySmallKills','smallDamage','enemyZoneSeconds','largeKills','deaths',
                 'unnecessaryRecalls','repeatRecalls','interruptedRecalls','emptySkills','spawnLoiterSeconds','idleSeconds','attackedFarmSeconds','ignoredBossSeconds']},
-            'rewardComponents': {key: sum(e.get('rewardComponents',{}).get(key,0) for e in episodes)/n for key in ['smallMonster','energy','emptySkill','invalidSkill','spawnLoiter','idle']}}
+            'rewardComponents': {key: sum(e.get('rewardComponents',{}).get(key,0) for e in episodes)/n for key in ['smallMonster','smallMonsterDamage','energy','emptySkill','invalidSkill','spawnLoiter','idle']}}
 
 
 def main():
@@ -91,12 +93,14 @@ def main():
     p.add_argument('--eval-games', type=int, default=8); p.add_argument('--eval-seconds', type=float, default=900)
     p.add_argument('--latest-weight', type=int, default=4); p.add_argument('--history-weight', type=int, default=3)
     p.add_argument('--algorithm-weight', type=int, default=3); p.add_argument('--learning-rate', type=float, default=.0003)
+    p.add_argument('--farm-start-fraction',type=float,default=.25);p.add_argument('--push-start-fraction',type=float,default=.25)
     args = p.parse_args()
     if args.model.parent.resolve() == args.output.resolve(): raise ValueError('Use a separate output directory')
     if not (1 <= args.updates <= 100000 and 8 <= args.steps <= 512 and 1 <= args.envs <= 16 and 1 <= args.max_seconds <= 86400
             and 3 <= args.interval_ticks <= 9 and 1 <= args.snapshot_every and 1 <= args.history_size <= 32 and 4 <= args.eval_games <= 128
             and 1 <= args.eval_seconds <= 86400 and 0 <= args.seed <= 4294967295 and args.learning_rate > 0): raise ValueError('Invalid league settings')
     if any(not 1 <= w <= 20 for w in [args.latest_weight,args.history_weight,args.algorithm_weight]): raise ValueError('Invalid opponent weights')
+    if not (0<=args.farm_start_fraction<=1 and 0<=args.push_start_fraction<=1 and args.farm_start_fraction+args.push_start_fraction<=1):raise ValueError('Invalid strategic start fractions')
     torch.manual_seed(args.seed); np.random.seed(args.seed); torch.set_num_threads(4)
     if any((args.output/name).exists() for name in ['initial-model.json','model.json','latest-model.json','league-training.json']):
         raise ValueError('Output already contains a run; choose a new directory and resume with --model previous/latest-model.json')
@@ -112,7 +116,7 @@ def main():
         for group in optimizer.param_groups: group['lr'] = args.learning_rate
     for key in ['objectivePolicy','selection','perceptionAdapter','defenseAdapter']: base.pop(key,None)
     base['decisionMode'] = 'learned/1'; base['decisionIntervalTicks'] = args.interval_ticks
-    base['modelName'] = 'ミニオン v1（v12 リーグPPO）'
+    base['modelName'] = 'ミニオン v1（v13 ファーム・攻城 PPO）'
     report = {'algorithm':'PPO','protocol':'full-match-league/12','status':'training','source':str(args.model.resolve()),'sourceSha256':hashlib.sha256(source).hexdigest(),
               'seed':args.seed,'config':vars(args).copy(),'history':[],'episodes':[],'snapshots':[],
               'opponentRule':'Frozen latest 40%, recent/history 30%, algorithm 30% by default; active matches retain their original opponent',
@@ -146,7 +150,8 @@ def main():
     try:
         warm = save('warm-start-model.json',0); current_pool = pool(warm)
         initialized = engine.call({'op':'init','model':str(warm.resolve()),'pool':current_pool,'envs':args.envs,
-                                   'options':{'seed':args.seed,'maxSeconds':args.max_seconds,'intervalTicks':args.interval_ticks,'gamma':gamma}})
+                                   'options':{'seed':args.seed,'maxSeconds':args.max_seconds,'intervalTicks':args.interval_ticks,'gamma':gamma,
+                                              'farmStartFraction':args.farm_start_fraction,'pushStartFraction':args.push_start_fraction}})
         obs = initialized['observations']; report['rewards'] = initialized['rewards']; report['rewardProfile'] = initialized['rewardProfile']; report['gamma'] = gamma; report['gaeLambda'] = lam
         frozen_evaluation_pool = copy.deepcopy(current_pool)
         frozen_evaluation_pool['latest'] = str(args.model.resolve())

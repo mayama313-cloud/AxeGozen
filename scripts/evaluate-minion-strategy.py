@@ -12,6 +12,7 @@ def main():
     p.add_argument('--output',type=Path,required=True);p.add_argument('--games',type=int,default=8);p.add_argument('--seconds',type=float,default=60);p.add_argument('--seed',type=int,default=90261216)
     p.add_argument('--scenarios',nargs='+',choices=['match','farm-start','push-9','retreat-duel','finish-duel'],default=['farm-start','push-9'])
     p.add_argument('--temperature',type=float)
+    p.add_argument('--algorithm-only',action='store_true')
     args=p.parse_args()
     if not 8<=args.games<=128 or not 1<=args.seconds<=900:raise ValueError('Invalid strategy diagnostic')
     for file in args.model:
@@ -21,19 +22,34 @@ def main():
     pool={'latest':str(root/'datas/models/minion-v1-v12-activity/model.json'),'history':[str(root/'datas/models/minion-v1-v11-combat/model.json'),str(root/'datas/models/minion-v1-v8-offense/model.json')],'weights':{'latest':4,'history':3,'algorithm':3}}
     def evaluate(file,scenario):
         interval=json.loads(file.read_text(encoding='utf-8-sig')).get('decisionIntervalTicks',6)
-        request={'op':'evaluate','model':str(file.resolve()),'pool':pool,'episodes':args.games,'scenarios':[scenario],
-                 'options':{'seed':args.seed,'maxSeconds':args.seconds,'intervalTicks':interval}}
-        if args.temperature is not None:request['temperature']=args.temperature
-        r=subprocess.run([args.node,str(root/'scripts/minion-league-env.js')],input=json.dumps(request)+'\n'+json.dumps({'op':'close'})+'\n',capture_output=True,text=True,encoding='utf8',timeout=3600)
-        if r.returncode:raise RuntimeError(r.stderr)
-        value=json.loads(r.stdout.splitlines()[0])
-        if 'error' in value:raise RuntimeError(value['error'])
-        rows=value['episodes'];n=len(rows)
-        summary={'model':str(file.resolve()),'sha256':hashlib.sha256(file.read_bytes()).hexdigest(),'intervalTicks':interval,'temperatureOverride':args.temperature,'scenario':scenario,'games':n,
+        def chunk(offset,count):
+            request={'op':'evaluate','model':str(file.resolve()),'pool':pool,'episodes':count,'offset':offset,'scenarios':[scenario],
+                     'options':{'seed':args.seed,'maxSeconds':args.seconds,'intervalTicks':interval}}
+            if args.algorithm_only:request['algorithmOnly']=True
+            if args.temperature is not None:request['temperature']=args.temperature
+            r=subprocess.run([args.node,str(root/'scripts/minion-league-env.js')],input=json.dumps(request)+'\n'+json.dumps({'op':'close'})+'\n',capture_output=True,text=True,encoding='utf8',timeout=3600)
+            if r.returncode:raise RuntimeError(r.stderr)
+            value=json.loads(r.stdout.splitlines()[0])
+            if 'error' in value:raise RuntimeError(value['error'])
+            return offset,value['episodes']
+        chunks={};size=max(1,(args.games+3)//4)
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            for future in as_completed([workers.submit(chunk,i,min(size,args.games-i)) for i in range(0,args.games,size)]):
+                offset,episodes=future.result();chunks[offset]=episodes
+        rows=[e for i in sorted(chunks) for e in chunks[i]];n=len(rows)
+        summary={'model':str(file.resolve()),'sha256':hashlib.sha256(file.read_bytes()).hexdigest(),'intervalTicks':interval,'temperatureOverride':args.temperature,'scenario':scenario,'games':n,'opponentMode':'algorithm-matrix' if args.algorithm_only else 'mixed-pool',
                  'wins':sum(e['winner']==1 for e in rows),'losses':sum(e['winner']==0 for e in rows),'draws':sum(e['winner'] is None for e in rows),
                  'farmSuccesses':sum(e['ownSmallKills']>0 for e in rows),'towerAttackSuccesses':sum(e['towerDamage']>0 for e in rows),
                  'recoveries':sum(e.get('recovered',False) for e in rows),'finishSuccesses':sum(e['kills']>0 for e in rows),
-                 'mean':{k:sum(e[k] for e in rows)/n for k in ['kills','ownSmallKills','smallDamage','towerDamage','towers','energy','enemyZoneSeconds','deaths','idleSeconds']}}
+                 'directTowerAttackSuccesses':sum(e['directTowerDamage']>0 for e in rows),
+                 'perCharacter':{c:{'games':sum(e['character']==c for e in rows),
+                    'mean':{k:sum(e[k] for e in rows if e['character']==c)/max(1,sum(e['character']==c for e in rows))
+                            for k in ['directSmallKills','directSmallDamage','directTowerDamage','summonTowerDamage','forwardSeconds','recallStarts','deaths']}}
+                                 for c in sorted(set(e['character'] for e in rows))},
+                 'mean':{k:sum(e[k] for e in rows)/n for k in ['kills','ownSmallKills','directSmallKills','summonSmallKills','directSmallDamage','summonSmallDamage','smallDamage','towerDamage','directTowerDamage','summonTowerDamage','directTowers','summonTowers','forwardSeconds','towers','energy','enemyZoneSeconds','deaths','idleSeconds','recallStarts','unnecessaryRecalls','repeatRecalls']}}
+        total_seconds=sum(e['seconds'] for e in rows)
+        summary['perMinute']={k:sum(e[k] for e in rows)/max(1,total_seconds)*60
+                              for k in ['directSmallKills','directSmallDamage','directTowerDamage','summonTowerDamage','forwardSeconds','deaths','recallStarts']}
         print(json.dumps(summary),flush=True);return {**summary,'episodes':rows}
     rows=[]
     with ThreadPoolExecutor(max_workers=4) as executor:

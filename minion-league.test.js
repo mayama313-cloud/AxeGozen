@@ -46,7 +46,7 @@ test('recall is unavailable while healthy at spawn, including the base proposal'
 });
 function recallEnvironment() {
   const env=new LeagueEnvironment(model(),new Pool(config));env.reset({slot:0,character:'alex'});
-  Object.assign(env.game.state.players['league-learner'],{x:0,z:8,hp:100});
+  Object.assign(env.game.state.players['league-learner'],{x:0,z:8,hp:80});
   env.memory={};env.state=env.game.observe('league-learner');env.observation();return env;
 }
 
@@ -106,6 +106,19 @@ test('real tower destruction ends the full match and produces the correct side-r
     r=env.step(index<0?0:index,false);if(r.episode)break;
   }
   assert.equal(r.terminal,true);assert.equal(r.episode.reason,'tower-destruction');assert.equal(r.episode.winner,1);assert.equal(r.episode.towers,1);
+  assert.equal(r.episode.directTowers,1);assert.ok(r.episode.directTowerDamage>0);assert.equal(r.episode.summonTowerDamage,0);
+});
+
+test('tower damage from an autonomous summon is recorded separately from its owner',()=>{
+  const env=recallEnvironment(),p=env.game.state.players['league-learner'];
+  const tower=Object.values(env.game.state.towers).find(t=>t.slot!==p.slot);tower.hp=1;
+  env.game.input(p.id,'c');
+  const robot=Object.values(env.game.state.robots).find(r=>r.owner===p.id);
+  Object.assign(robot,{x:tower.x-1.8,z:tower.z,atkCd:0,target:tower.id});
+  env.state=env.game.observe(p.id);env.observation();
+  for(let i=0;i<10&&!tower.dead;i++)env.step(env.choices.findIndex(c=>c.action.event==='noop'),false);
+  assert.equal(tower.dead,true);assert.equal(env.metrics.directTowerDamage,0);assert.equal(env.metrics.directTowers,0);
+  assert.ok(env.metrics.summonTowerDamage>0);assert.equal(env.metrics.summonTowers,1);
 });
 test('global observations condition candidate scores and malformed context weights are rejected',()=>{
   const m=model(),p=m.tacticalPolicy;p.weights.contextW[0][0]=1;p.weights.hiddenW[0][0]=1;
@@ -124,6 +137,90 @@ function warmEnvironment() {
   const env=new LeagueEnvironment(model(),new Pool(config));env.reset();
   for(let i=0;i<180;i++)env.game.tick();env.state=env.game.observe('league-learner');env.observation();return env;
 }
+test('model chase orders navigate around a wall and reach a distant monster for all characters',()=>{
+  for(const character of World.CHARACTERS.map(c=>c.id)){
+    const m=model();m.characters=World.CHARACTERS.map(c=>c.id);
+    const env=new LeagueEnvironment(m,new Pool(config));env.reset({slot:0,character});
+    while(env.game.observe('league-learner').time<5.2)env.game.tick();
+    env.game.state.environment.totals=[280,280];
+    const p=env.game.state.players['league-learner'];Object.assign(p,{x:-26,z:0,hp:p.cfg.maxHp,target:null,dest:null,keys:null});
+    const monster=Object.values(env.game.state.monsters).find(m=>!m.large&&m.x>0&&m.z===0);
+    env.game.input(p.id,'chase',{id:monster.id});
+    for(let i=0;i<World.TICK*25&&!monster.dead&&!p.dead;i++)env.game.tick();
+    assert.equal(monster.dead,true,JSON.stringify({character,x:p.x,z:p.z,hp:p.hp,monster:{x:monster.x,z:monster.z,hp:monster.hp},path:p.path}));assert.equal(p.dead,false,character);
+  }
+});
+test('a model can leave wall contact after a charge and continue its siege order',()=>{
+  const m=model(),env=new LeagueEnvironment(m,new Pool(config));env.reset({slot:1,character:'darius'});
+  env.game.state.environment.totals=[280,280];
+  const p=env.game.state.players['league-learner'];Object.assign(p,{x:17.52,z:6.44,hp:300,target:null,dest:null,keys:null});
+  for(const id of Object.keys(env.game.state.monsters))delete env.game.state.monsters[id];
+  for(const camp of env.game.state.camps)camp.timer=1000;
+  const tower=env.game.state.towers['t0-1'];
+  env.game.input(p.id,'chase',{id:tower.id});
+  for(let i=0;i<World.TICK*2;i++)env.game.tick();
+  assert.ok(Math.hypot(p.x-17.52,p.z-6.44)>2);
+  for(let i=0;i<World.TICK*25&&!tower.dead&&!p.dead;i++)env.game.tick();
+  assert.equal(tower.dead,true);assert.equal(p.dead,false);
+});
+test('model movement completes on arrival so a healed actor is no longer marked as returning home',()=>{
+  const env=recallEnvironment(),p=env.game.state.players['league-learner'],home=World.MAP.spawns[p.slot];
+  Object.assign(p,{x:home.x+1,z:home.z,hp:100});env.game.input(p.id,'move',home);
+  for(let i=0;i<World.TICK*2;i++)env.game.tick();
+  assert.equal(p.dest,null);assert.deepEqual(p.path,[]);assert.equal(p.hp,p.cfg.maxHp);
+});
+test('teacher student uses known public camp movement goals before monsters spawn',()=>{
+  const m=model();m.tacticalPolicy.camps=[{id:'monster-1',x:-23,z:7}];m.tacticalPolicy.baseProposal=false;
+  delete m.tacticalPolicy.contextSize;delete m.tacticalPolicy.weights.contextW;
+  const env=new LeagueEnvironment(m,new Pool(config));env.reset({slot:0});
+  assert.ok(env.choices.some(c=>c.action.event==='move'&&c.action.data.x===-23&&c.action.data.z===7));
+  env.state.monsters.push({id:'monster-1',x:-23,z:7,slot:2,hp:100,maxHp:100});env.observation();
+  assert.ok(env.choices.some(c=>c.action.event==='chase'&&c.action.data.id==='monster-1'));
+  // A candidate-only student must not depend on the old actor's proposed input.
+  m.weights.hiddenW=null;
+  assert.doesNotThrow(()=>Policy.decide(m,env.state,'league-learner',{}));
+});
+test('offline teacher query restores game, observations and controller memory exactly',()=>{
+  const env=recallEnvironment(),saved=env.snapshot();
+  const label=require('./scripts/collect-minion-dagger').queryTeacher(env,[]);
+  assert.ok(label.index>=0&&label.index<env.choices.length);
+  assert.deepEqual(env.snapshot(),saved);
+});
+test('student features remember public friendly camp kills without changing legacy observations',()=>{
+  const m=model();m.tacticalPolicy.inputSize=128;m.tacticalPolicy.featureVersion='minion-student-state/23';
+  m.tacticalPolicy.weights.hiddenW=[Array(128).fill(0)];
+  m.tacticalPolicy.camps=[-23,23].flatMap((x,i)=>[-7,0,7].map((z,j)=>({id:`monster-${1+i*3+j}`,x,z})));
+  const env=new LeagueEnvironment(m,new Pool(config));env.reset({slot:0});
+  const memory={},id='monster-1';
+  Policy.updateMemory(memory,env.state,'league-learner',[{event:'kill',data:{time:1,attacker:{slot:0},victim:{id,kind:'monster'}}}],m.featureVersion,m.init);
+  Policy.updateMemory(memory,env.state,'league-learner',[{event:'kill',data:{time:1,attacker:{slot:1},victim:{id:'monster-2',kind:'monster'}}}],m.featureVersion,m.init);
+  const choices=Decisions.candidates(m,env.state,'league-learner',{event:'noop'},memory);
+  const camp=choices.find(c=>c.action.event==='move'&&c.action.data.x===-23&&c.action.data.z===-7);
+  assert.equal(camp.x[96],1);assert.equal(camp.x[97],0);assert.equal(camp.x[102],1/3);assert.equal(camp.x[104],1);
+  const plain={...memory};delete plain.student;
+  assert.deepEqual(Policy.features(env.state,'league-learner',m.init,memory,m.featureVersion),Policy.features(env.state,'league-learner',m.init,plain,m.featureVersion));
+});
+test('teacher skill capture excludes rejected casts',()=>{
+  const p={qCd:0,cCd:0,eCd:0,aiming:false,target:'enemy',commands:{c(){},q(){p.qCd=5;},dash(){p.aiming=true;}}},skills=[];
+  require('./scripts/collect-minion-teacher').captureSkills(p,skills);
+  p.commands.c();p.commands.q({x:1,z:2});p.commands.dash();
+  assert.deepEqual(skills.map(s=>s.event),['q','dash']);
+});
+test('student compound inputs preserve the CPU C then Q order and execute both skills',()=>{
+  const m=model();m.tacticalPolicy.inputSize=128;m.tacticalPolicy.featureVersion='minion-student-state/24';
+  m.tacticalPolicy.weights.hiddenW=[Array(128).fill(0)];m.tacticalPolicy.camps=[-23,23].flatMap((x,i)=>[-7,0,7].map((z,j)=>({id:`monster-${1+i*3+j}`,x,z})));
+  const env=new LeagueEnvironment(m,new Pool(config));env.reset({slot:0,character:'darius'});
+  const p=env.game.state.players['league-learner'],enemy=env.game.state.players['league-opponent'];
+  Object.assign(p,{x:0,z:8,hp:300,qCd:0,cCd:0});Object.assign(enemy,{x:1.5,z:8});
+  env.state=env.game.observe(p.id);env.observation();
+  const skills=[{event:'c',target:enemy.id,data:{x:enemy.x,z:enemy.z}},{event:'q',target:enemy.id,data:{x:enemy.x,z:enemy.z}}];
+  const label=require('./scripts/collect-minion-teacher').teacherChoice(env.choices,env.state,p.id,{...p,target:enemy.id},skills);
+  const action=env.choices[label.index].action;
+  assert.deepEqual(action.inputs.map(i=>i.event),['steer','chase','c','q']);
+  assert.equal(env.choices[label.index].x[123],1);assert.equal(env.choices[label.index].x[124],1);
+  for(const c of Policy.commands(m,env.state,p.id,action))env.game.input(p.id,c.event,c.data);
+  assert.ok(p.cCd>0&&p.qCd>0);assert.equal(p.grabbing,enemy.id);
+});
 function choose(env,event) {return env.choices.findIndex(c=>c.action.event===event);}
 
 test('tactical curriculum covers both sides and all characters without changing the action selector',()=>{
@@ -145,9 +242,11 @@ test('tactical curriculum covers both sides and all characters without changing 
   assert.throws(()=>new LeagueEnvironment(m,new Pool(config),{retreatStartFraction:.6,finishStartFraction:.5}));
 });
 
-test('low health values recovery and leaving threats; healthy actors value finishing and tower progress',()=>{
+test('critical health values leaving threats; healthy actors value finishing and tower progress',()=>{
   const env=new LeagueEnvironment(model(),new Pool(config));env.reset({scenario:'retreat-duel',slot:0,character:'alex'});
   const p=env.state.players.find(p=>p.id==='league-learner'),enemy=env.state.players.find(p=>p.id==='league-opponent');
+  p.hp=p.maxHp*.1;
+  enemy.hp=100000;env.state.towers=[];env.state.robots=[];
   const dangerous=env.potential();enemy.x=25;enemy.z=-25;
   assert.ok(env.potential()>dangerous);
   const injured=env.potential();p.hp=p.maxHp;assert.ok(env.potential()>injured);
@@ -157,6 +256,39 @@ test('low health values recovery and leaving threats; healthy actors value finis
   env.state.monsters=[];
   env.state.towers=[{id:'target',slot:1,x:12,z:8,hp:100}];
   const far=env.potential();p.x=6;assert.ok(env.potential()>far);
+});
+
+test('temporary damage and healing do not change objective potential outside critical HP',()=>{
+  const env=recallEnvironment(),p=env.state.players.find(p=>p.id==='league-learner');
+  p.hp=p.maxHp;const full=env.potential();
+  for(const hp of [.95,.8,.6,.3]){p.hp=p.maxHp*hp;assert.equal(env.potential(),full);}
+  assert.ok(Math.abs(REWARDS.damageReceived)*p.maxHp<.05);
+  assert.ok(Math.abs(REWARDS.zoneDamage)*p.maxHp<.05);
+  assert.equal(REWARDS.death,-6);
+});
+
+test('recall is excluded within 25 of spawn unless a visible enemy blocks the return corridor',()=>{
+  for(const slot of [0,1]){
+    const env=recallEnvironment(),p=env.state.players.find(p=>p.id==='league-learner'),home=World.MAP.spawns[slot];
+    p.slot=slot;p.safe=false;env.state.towers=[];env.state.robots=[];
+    env.state.players=[p];
+    const canRecall=()=>Decisions.candidates(env.model,env.state,p.id,{event:'recall'},{}).some(c=>c.action.event==='recall');
+    const direction=slot?-1:1;
+    const place=d=>Object.assign(p,{x:home.x+direction*d,z:home.z});
+    for(const d of [10,24.99,25]){place(d);assert.equal(canRecall(),false,`${slot}/${d}`);}
+    place(25.01);assert.equal(canRecall(),true);
+    place(25);
+    const blocker={id:'blocker',slot:1-slot,character:'alex',hp:100,vis:true,x:home.x+direction*12.5,z:home.z};
+    env.state.players.push(blocker);assert.equal(canRecall(),true);
+    blocker.dead=true;assert.equal(canRecall(),false);blocker.dead=false;
+    blocker.vis=false;assert.equal(canRecall(),false);blocker.vis=true;
+    blocker.slot=slot;assert.equal(canRecall(),false);blocker.slot=1-slot;
+    blocker.x=home.x+direction*27;assert.equal(canRecall(),false); // Behind the actor.
+    blocker.x=home.x-direction*2;assert.equal(canRecall(),false); // Beyond spawn.
+    blocker.x=home.x+direction*12.5;blocker.z=home.z+10;assert.equal(canRecall(),false);
+    blocker.z=home.z;env.state.players.pop();env.state.robots.push(blocker);assert.equal(canRecall(),true);
+    env.state.robots=[];place(26);p.hp=p.maxHp*.8;assert.equal(canRecall(),false);
+  }
 });
 
 test('learned retreat mobility cancels an existing chase through ordinary inputs',()=>{
@@ -196,7 +328,7 @@ test('an empty attack has the stronger cost and a normal small-monster kill earn
   farm.state=farm.game.observe(p.id);farm.observation();
   const attack=farm.choices.findIndex(c=>c.action.event==='q'&&c.action.data?.x===farm.state.monsters.find(m=>m.id===monster.id).x);
   farm.step(attack,false);
-  assert.equal(farm.metrics.smallKills,1);assert.equal(farm.metrics.rewardComponents.smallMonster,.8);
+  assert.equal(farm.metrics.smallKills,1);assert.equal(farm.metrics.rewardComponents.smallMonster,REWARDS.smallMonster);
   assert.ok(farm.metrics.rewardComponents.energy>=.08);assert.equal(farm.metrics.rewardComponents.idle,0);
 });
 
@@ -269,6 +401,7 @@ test('economy rewards stop at the real territory cap while tower destruction sti
   monster.hp=1;p.x=monster.x+1.8;p.z=monster.z;farm.state=farm.game.observe(p.id);farm.observation();
   const q=farm.choices.findIndex(c=>c.action.event==='q'&&c.action.data?.x===farm.state.monsters.find(m=>m.id===monster.id).x);farm.step(q,false);
   assert.equal(farm.metrics.smallKills,1);assert.equal(farm.metrics.usefulEnergy,0);
+  assert.ok(farm.metrics.directSmallDamage>0);assert.equal(farm.metrics.summonSmallDamage,0);
   for(const key of ['smallMonster','smallMonsterDamage','energy'])assert.equal(farm.metrics.rewardComponents[key],0);
   const push=new LeagueEnvironment(model(),new Pool(config));push.reset({scenario:'push-9'});
   const actor=push.game.state.players['league-learner'],tower=Object.values(push.game.state.towers).filter(t=>t.slot!==actor.slot).sort((a,b)=>Math.hypot(a.x-actor.x,a.z-actor.z)-Math.hypot(b.x-actor.x,b.z-actor.z))[0];

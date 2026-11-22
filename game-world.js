@@ -123,6 +123,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   const isAlgorithm = p => !!p && (p.bot ? !policyFor(p) : controllers ? !!p.socket && !policyFor(p) : (p.socket === cpuSocket && !policy) || (opponent && p.slot === 0 && !!p.socket));
   const command = (p, event, data) => p.commands?.[event]?.(data);
   const players = {}, robots = {}, towers = {}, projectiles = {}, monsters = {}, energy = {};
+  const autoNavigation = p => !!players[p.id] && (isAlgorithm(p) || policyFor(p)?.autoNavigation === true);
   const environment = { enabled: true, totals: [0, 0] };
   let energySeq = 0, energyTimer = 0;
   const camps = [{ x: 0, z: 3, large: true }, ...[-1, 1].flatMap(side => [-7, 0, 7].map(z => ({ x: side * 23, z, large: false })))].map((c, i) => ({ ...c, id: `monster-${i}`, timer: 5 }));
@@ -258,8 +259,12 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     if (Math.abs(b.x) > HALF - 1 || Math.abs(b.z) > HALF - 1) return false;
     const dx = b.x - a.x, dz = b.z - a.z, length2 = dx * dx + dz * dz;
     return blocks.every(o => {
-      const t = length2 ? Math.max(0, Math.min(1, ((o.x - a.x) * dx + (o.z - a.z) * dz) / length2)) : 0;
-      return Math.hypot(a.x + dx * t - o.x, a.z + dz * t - o.z) >= o.r + radius + 0.03;
+      const required=o.r+radius+0.03,ox=a.x-o.x,oz=a.z-o.z,start2=ox*ox+oz*oz,dot=ox*dx+oz*dz;
+      // Collision separation can leave an actor inside the navigation padding.
+      // Permit escape only when the entire segment moves away from that circle.
+      if(start2<required*required)return dot>=-1e-9&&(ox+dx)**2+(oz+dz)**2>start2+1e-8;
+      const t = length2 ? Math.max(0, Math.min(1, -dot / length2)) : 0;
+      return (ox+dx*t)**2+(oz+dz*t)**2>=required*required;
     });
   }
   function findPath(r, goal, stop, blocks) {
@@ -276,12 +281,12 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     start.cost = 0; start.score = dist(start, goal);
     // 到達不能な目的地でも、1回の探索でフレーム全体を使い切らない。
     let explored = 0;
-    const searchLimit = isAlgorithm(r) ? 4096 : 512;
+    const searchLimit = autoNavigation(r) ? 4096 : 512;
     while (open.length && explored++ < searchLimit) {
       let best = 0;
       for (let i = 1; i < open.length; i++) if (open[i].score < open[best].score) best = i;
       const current = open.splice(best, 1)[0], id = key(current.x, current.z);
-      if (dist(current, goal) <= stop && !(isAlgorithm(r) && r.character === 'mira' && unit(goal.id) && !cpuShotClear({ ...current, slot: r.slot }, goal))) {
+      if (dist(current, goal) <= stop && !(autoNavigation(r) && r.character === 'mira' && unit(goal.id) && !cpuShotClear({ ...current, slot: r.slot }, goal))) {
         const path = [];
         for (let n = current; n; n = n.parent) path.unshift({ x: n.x, z: n.z });
         return path;
@@ -304,7 +309,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     const blocks = navigationBlocks(r), d = dist(r, goal), stop = Math.max(0.1, range - 0.12);
     const approach = { x: goal.x + (r.x - goal.x) / d * stop, z: goal.z + (r.z - goal.z) / d * stop };
     let waypoint = approach;
-    if (!clearSegment(r, approach, r.radius, blocks) || (isAlgorithm(r) && r.character === 'mira' && unit(goal.id) && !cpuShotClear({ ...approach, slot: r.slot }, goal))) {
+    if (!clearSegment(r, approach, r.radius, blocks) || (autoNavigation(r) && r.character === 'mira' && unit(goal.id) && !cpuShotClear({ ...approach, slot: r.slot }, goal))) {
       r.pathAge = (r.pathAge || 0) + DT;
       const changedTarget = r.pathTarget !== goal.id;
       const movedTarget = r.pathGoal && dist(r.pathGoal, goal) > 1;
@@ -811,7 +816,9 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
   function cpuShotClear(p, foe) {
     const blocks = [...OBST, ...Object.values(towers).filter(t => !t.dead && t !== foe).map(t => ({ ...t, r: t.radius })),
       { ...SPAWNS[1 - p.slot], r: CFG.safeRadius }];
-    return clearSegment(p, foe, CFG.magicRadius, blocks);
+    const d = dist(p, foe), contact = Math.min(d, (foe.radius || 0) + CFG.magicRadius);
+    const to = d ? { x: foe.x + (p.x - foe.x) / d * contact, z: foe.z + (p.z - foe.z) / d * contact } : foe;
+    return clearSegment(p, to, CFG.magicRadius, blocks);
   }
   function cpuMobility(p, foe) {
     if (p.eCd > 0) return;
@@ -996,7 +1003,7 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
     } else {
       let goal = p.dest;
       if (foe) {
-        if (dist(p, foe) <= reach(p.cfg.atkRange, foe) && (!isAlgorithm(p) || p.character !== 'mira' || cpuShotClear(p, foe))) {
+        if (dist(p, foe) <= reach(p.cfg.atkRange, foe) && (!autoNavigation(p) || p.character !== 'mira' || cpuShotClear(p, foe))) {
           if (isAlgorithm(p)) recordInput(p, 'chase', { id: foe.id }, 'derived');
           goal = null; p.face = ang(p, foe);
           if (p.atkCd <= 0) { p.atkCd = p.cfg.atkCd; attack(p, foe, p.cfg.atkDmg); }
@@ -1007,8 +1014,10 @@ function createMatch(solo = false, cpu = false, { trace = null, policy = null, o
         if (!foe || dist(p, foe) > reach(p.cfg.atkRange, foe)) p.face = Math.atan2(dir.x, dir.z);
       }
       if (goal) {
-        if (isAlgorithm(p)) {
-          march(p, goal, foe ? reach(p.cfg.atkRange, foe) : goal.range || 0.2, speed);
+        if (autoNavigation(p)) {
+          if(!foe&&dist(p,goal)<=(goal.range||0.2)){
+            p.dest=null;p.path=[];p.pathTarget=null;p.pathGoal=null;p.pathAge=0;
+          }else march(p, goal, foe ? reach(p.cfg.atkRange, foe) : goal.range || 0.2, speed);
           pushOut(p); updateBush(p);
           if (protectedUnit(p)) p.hp = Math.min(p.cfg.maxHp, p.hp + CFG.safeHeal * DT);
           return;

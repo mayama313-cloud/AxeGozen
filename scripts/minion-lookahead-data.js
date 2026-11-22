@@ -52,7 +52,13 @@ try{
       for(let i=0;i<choices.length;i++){
         env.restore(snapshot);const reward=env.lookahead(i,horizon,rolloutSettings);returns.push(reward);
         outcomes.push({seconds:env.elapsed-snapshot.data.elapsed,smallKills:env.metrics.smallKills-snapshot.data.metrics.smallKills,
-          towerDamage:env.metrics.towerDamage-snapshot.data.metrics.towerDamage,deaths:env.metrics.deaths-snapshot.data.metrics.deaths});rollouts++;
+          towerDamage:env.metrics.towerDamage-snapshot.data.metrics.towerDamage,
+          directTowerDamage:env.metrics.directTowerDamage-snapshot.data.metrics.directTowerDamage,
+          summonTowerDamage:env.metrics.summonTowerDamage-snapshot.data.metrics.summonTowerDamage,
+          directSmallKills:env.metrics.directSmallKills-snapshot.data.metrics.directSmallKills,
+          smallMonsterReward:env.metrics.rewardComponents.smallMonster-snapshot.data.metrics.rewardComponents.smallMonster,
+          forwardSeconds:env.metrics.forwardSeconds-snapshot.data.metrics.forwardSeconds,
+          deaths:env.metrics.deaths-snapshot.data.metrics.deaths});rollouts++;
       }
       env.restore(snapshot);const row={state:states++,scenario:enemyHpScale===null?scenario:'encounter-'+scenario,character,slot,prefix,hpScale,enemyHpScale,horizon,rolloutSettings,rewardProfile:REWARD_VERSION,x:observation.x,decisionX:observation.decisionX,
         returns,actions:choices.map(c=>c.action),outcomes};

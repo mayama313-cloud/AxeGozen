@@ -7,6 +7,18 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 
 class LeagueTests(unittest.TestCase):
+    def test_student_observations_and_protocol_survive_league_export(self):
+        row=[0.]*128;row[127]=1
+        model={'inputSize':1024,'tacticalPolicy':{'inputSize':128,'hiddenSize':1,'baseProposal':False,
+            'featureVersion':'minion-student-state/23','camps':[{'id':'known','x':1,'z':2}],
+            'weights':{'hiddenW':[row],'hiddenB':[0.],'outputW':[1.],'outputB':0.}}}
+        actor=module.LeagueActor(model);export=actor.export()
+        self.assertEqual(export['inputSize'],128);self.assertFalse(export['baseProposal'])
+        self.assertEqual(export['camps'],model['tacticalPolicy']['camps']);self.assertEqual(export['featureVersion'],'minion-student-state/23')
+        x,c,mask=module.tensors([{'x':[0.]*1024,'decisionX':[row]}])
+        self.assertEqual(c.shape[-1],128);distribution,_=actor(x,c,mask)
+        self.assertEqual(float(distribution.probs[0,0]),1)
+
     def model(self):
         row=[0.]*64;row[0]=1
         return {'inputSize':1072,'tacticalPolicy':{'hiddenSize':1,'weights':{'hiddenW':[row],'hiddenB':[0.],'outputW':[1.],'outputB':0.}}}

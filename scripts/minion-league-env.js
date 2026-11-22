@@ -7,12 +7,12 @@ const Decisions = require('../public/minion-decisions');
 const { readJSON } = require('./minion-input');
 const init = model => ({ ...model.init, map: World.MAP, cfg: World.CFG, characters: World.CHARACTERS });
 const load = file => { const model = Policy.validate(readJSON(file)); return { file, model: { ...model, init: init(model) }, sha256: crypto.createHash('sha256').update(JSON.stringify(model)).digest('hex') }; };
-const REWARD_VERSION = 'league-survival-offense/18';
-const REWARDS = Object.freeze({ win: 30, loss: -30, tower: 2, towerDamage: .008, large: 4, smallMonster: .8, energy: .01, kill: 2, death: -6, zoneDamage:-.02,
-  damageReceived: -.002, emptySkill: -.25, invalidSkill: -.05, unnecessaryRecall: -.25, repeatRecall: -.04, interruptedRecall: -.15,
+const REWARD_VERSION = 'league-objective-first/20';
+const REWARDS = Object.freeze({ win: 30, loss: -30, tower: 2, towerDamage: .008, large: 4, smallMonster: 2.4, energy: .01, kill: 2, death: -6, zoneDamage:-.0001,
+  damageReceived: -.0001, emptySkill: -.25, invalidSkill: -.05, unnecessaryRecall: -.25, repeatRecall: -.04, interruptedRecall: -.15,
   spawnLoiterPerSecond: -.1, idlePerSecond: -.1, attackedFarmPerSecond: -.03, ignoredBossPerSecond: -.025, timePerSecond: -.01,
-  smallMonsterDamage: .003, farmPotential: .6, farmDamagePotential: .15, towerPotential: 1.5,
-  healthPotential: 3, dangerPotential: 3, retreatPotential: 2, finishPotential: 1.5, heroDamage: .012 });
+  smallMonsterDamage: .003, farmPotential: 1, farmDamagePotential: .15, towerPotential: 3,
+  dangerPotential: .25, finishPotential: 1.5, heroDamage: .012 });
 const inControl = (p,slot,zone) => !!zone && (slot ? p.z-p.x : p.x-p.z) < zone.boundary;
 const territoryFraction = zone => Math.max(0,Math.min(1,1+(zone?.boundary || 0)/(2*World.MAP.half))) ** 2;
 const energyCap=()=>-World.CONTROL_BOUNDARY_MIN/World.CFG.energyShrink;
@@ -70,11 +70,12 @@ class LeagueEnvironment {
     this.lastHeroHit = -100; this.lastBossHit = -100; this.spawnGraceUntil = 5; this.totalReward = 0; const f = this.fixture;
     this.metrics = { scenario:this.scenario, opponent: f.category, opponentFile: f.entry?.file || null, opponentSha256: f.entry?.sha256 || null,
       character: f.character, opponentCharacter: f.opponentCharacter, slot: f.slot, kills: 0, deaths: 0, towers: 0, towersLost: 0,
-      towerDamage: 0, energy: 0, usefulEnergy:0, smallKills: 0, ownSmallKills:0, enemySmallKills:0, smallDamage:0, enemyZoneSeconds:0, largeKills: 0, largeLosses: 0, recallStarts: 0, repeatRecalls: 0, unnecessaryRecalls: 0,
+      towerDamage: 0, directTowerDamage:0, summonTowerDamage:0, directTowers:0, summonTowers:0, forwardSeconds:0,
+      energy: 0, usefulEnergy:0, smallKills: 0, directSmallKills:0, summonSmallKills:0, directSmallDamage:0, summonSmallDamage:0, ownSmallKills:0, enemySmallKills:0, smallDamage:0, enemyZoneSeconds:0, largeKills: 0, largeLosses: 0, recallStarts: 0, repeatRecalls: 0, unnecessaryRecalls: 0,
       interruptedRecalls: 0, emptySkills: 0, invalidSkills: 0, spawnLoiterSeconds: 0, idleSeconds: 0, fieldIdleSeconds: 0, attackedFarmSeconds: 0, ignoredBossSeconds: 0,
       rewardComponents: { smallMonster: 0, smallMonsterDamage:0, energy: 0, emptySkill: 0, invalidSkill: 0, spawnLoiter: 0, idle: 0 } };
     const learner = () => [];
-    learner.externalInputs=true;this.learnerController=learner;
+    learner.externalInputs=true;learner.autoNavigation=this.model.decisionMode==='learned/1';this.learnerController=learner;
     learner.observe = e => this.cues.push(e);
     learner.observeState = state => { Policy.updateMemory(this.memory, state, 'league-learner', this.cues, this.model.featureVersion, this.model.init); this.cues = []; };
     this.game = World.createMatch(false, false, { teamSizes: [1,1], onCombat: e => this.combat.push(e) });
@@ -129,20 +130,19 @@ class LeagueEnvironment {
     const farm=this.state.monsters.filter(m=>!m.large&&!m.dead&&inControl(m,p.slot,own));
     const farmPhi=farm.reduce((best,m)=>Math.max(best,REWARDS.farmPotential*Math.max(0,1-Math.hypot(m.x-p.x,m.z-p.z)/60)+REWARDS.farmDamagePotential*(1-m.hp/m.maxHp)),0);
     const towerPhi=towers.length ? REWARDS.towerPotential * Math.max(0, 1 - Math.min(...towers.map(t => Math.hypot(t.x-p.x,t.z-p.z))) / 90) : 0;
-    const hp=p.hp/p.maxHp, home=World.MAP.spawns[p.slot];
+    const hp=p.hp/p.maxHp, critical=Math.max(0,1-hp/.3);
     const enemies=this.state.players.filter(e=>e.slot!==p.slot&&e.vis&&!e.dead&&Number.isFinite(e.x));
     const threats=[...enemies,...this.state.robots.filter(e=>e.slot!==p.slot&&!e.dead),...towers];
     const danger=threats.reduce((risk,e)=>Math.max(risk,Math.max(0,1-Math.hypot(e.x-p.x,e.z-p.z)/12)),0);
     const finish=enemies.reduce((best,e)=>Math.max(best,Math.min(1,World.configFor(p.character).atkDmg/Math.max(1,e.hp))*Math.max(0,1-Math.hypot(e.x-p.x,e.z-p.z)/24)),0);
     // Discounted potential differences pay for progress, never for toggling orders.
-    return hp**2*(towerPhi+farmPhi*economicWeight(own?.energy||0)+REWARDS.finishPotential*finish)
-      +REWARDS.healthPotential*hp-REWARDS.dangerPotential*(1-hp)**2*danger
-      +REWARDS.retreatPotential*(1-hp)**2*Math.max(0,1-Math.hypot(home.x-p.x,home.z-p.z)/85);
+    return (1-critical)*(towerPhi+farmPhi*economicWeight(own?.energy||0)+REWARDS.finishPotential*finish)
+      -REWARDS.dangerPotential*critical**2*danger;
   }
   observation() {
     const actor = 'league-learner';
     Policy.updateMemory(this.memory, this.state, actor, this.cues, this.model.featureVersion, this.model.init); this.cues = [];
-    const base = Policy.decide({ ...this.model, tacticalPolicy: null }, this.state, actor, this.memory, this.random(), this.random(), this.random());
+    const base = this.model.tacticalPolicy?.baseProposal===false?{event:'noop'}:Policy.decide({ ...this.model, tacticalPolicy: null }, this.state, actor, this.memory, this.random(), this.random(), this.random());
     this.choices = Decisions.candidates(this.model, this.state, actor, base, this.memory);
     return { x: Array.from(Policy.features(this.state, actor, this.model.init, this.memory, this.model.featureVersion)), decisionX: this.choices.map(c => c.x) };
   }
@@ -182,6 +182,7 @@ class LeagueEnvironment {
         if (e.source === 'league-learner') directDealt += e.amount;
         if (owned && e.targetKind === 'player' && e.targetSlot !== before.slot) reward += e.amount * REWARDS.heroDamage;
         if(owned&&e.targetKind==='monster'&&!e.large){
+          this.metrics[e.source==='league-learner'?'directSmallDamage':'summonSmallDamage']+=e.amount;
           const monster=beforeState.monsters.find(m=>m.id===e.target);
           const credit=this.farmDamageCredit.get(e.target)||{paid:0,maxHp:monster?.maxHp||100};
           const amount=Math.min(e.amount,Math.max(0,credit.maxHp-credit.paid));credit.paid+=amount;this.farmDamageCredit.set(e.target,credit);
@@ -189,9 +190,20 @@ class LeagueEnvironment {
         }
         if (e.target === 'league-learner') { received += e.amount; reward += e.amount * REWARDS.damageReceived; if (e.source === 'league-opponent' || e.owner === 'league-opponent') this.lastHeroHit = this.elapsed; }
         if(e.target==='league-learner'&&e.zone)reward+=e.amount*REWARDS.zoneDamage;
-        if (e.targetKind === 'tower') { reward += e.amount * REWARDS.towerDamage * (ours ? 1 : -1); if (ours) this.metrics.towerDamage += e.amount; }
+        if (e.targetKind === 'tower') {
+          reward += e.amount * REWARDS.towerDamage * (ours ? 1 : -1);
+          if (ours) {
+            this.metrics.towerDamage += e.amount;
+            if(e.source==='league-learner')this.metrics.directTowerDamage+=e.amount;
+            else if(e.owner==='league-learner')this.metrics.summonTowerDamage+=e.amount;
+          }
+        }
         if (e.large && !ours && e.slot !== 2) this.lastBossHit = this.elapsed;
-      } else if (e.targetKind === 'tower') { this.metrics[ours ? 'towers' : 'towersLost']++; reward += REWARDS.tower * (ours ? 1 : -1); }
+      } else if (e.targetKind === 'tower') {
+        this.metrics[ours ? 'towers' : 'towersLost']++; reward += REWARDS.tower * (ours ? 1 : -1);
+        if(e.source==='league-learner')this.metrics.directTowers++;
+        else if(e.owner==='league-learner')this.metrics.summonTowers++;
+      }
       else if (e.targetKind === 'monster' && e.large && e.slot !== 2) {
         this.metrics[ours ? 'largeKills' : 'largeLosses']++;
         const contested=this.elapsed-this.lastBossHit<3;
@@ -200,6 +212,7 @@ class LeagueEnvironment {
       else if (e.targetKind === 'monster' && !e.large) {
         if(owned){
           this.metrics.smallKills++;addReward('smallMonster',REWARDS.smallMonster*farmWeight);
+          this.metrics[e.source==='league-learner'?'directSmallKills':'summonSmallKills']++;
           const monster=beforeState.monsters.find(m=>m.id===e.target),own=beforeState.control.find(z=>z.slot===before.slot),enemy=beforeState.control.find(z=>z.slot!==before.slot);
           if(monster&&inControl(monster,before.slot,own))this.metrics.ownSmallKills++;
           if(monster&&inControl(monster,1-before.slot,enemy))this.metrics.enemySmallKills++;
@@ -211,6 +224,7 @@ class LeagueEnvironment {
     const after = this.state.players.find(p => p.id === 'league-learner'), energy = Math.max(0, after.energy - before.energy);
     if(this.startedLow&&!this.metrics.deaths&&!after.dead&&after.hp>=after.maxHp*.8)this.metrics.recovered=true;
     if(!after.dead&&inControl(after,1-after.slot,this.state.control.find(z=>z.slot!==after.slot)))this.metrics.enemyZoneSeconds+=dt;
+    if(!after.dead&&(after.slot?after.z-after.x:after.x-after.z)>0)this.metrics.forwardSeconds+=dt;
     const afterEconomy=this.state.control.find(z=>z.slot===before.slot)?.energy||0;
     const usefulEnergy=Math.max(0,Math.min(energyCap(),afterEconomy)-Math.min(energyCap(),ownEconomy));
     this.metrics.energy += energy;this.metrics.usefulEnergy+=usefulEnergy;addReward('energy',usefulEnergy * REWARDS.energy);
@@ -316,7 +330,9 @@ async function serve() {
         for (let i=0;i<offset;i++) evaluationPool.draw(entry.model.characters);
         for (let i = 0; i < q.episodes; i++) {
           const index=i+offset,env = new LeagueEnvironment(entry.model,evaluationPool,{...q.options,seed:q.options.seed+index*997});
-          let observation = env.reset({character:entry.model.characters[index%entry.model.characters.length],slot:Math.floor(index/entry.model.characters.length)%2,scenario:q.scenarios?.[index%q.scenarios.length]||'match'});
+          const forced={character:entry.model.characters[index%entry.model.characters.length],slot:Math.floor(index/entry.model.characters.length)%2,scenario:q.scenarios?.[index%q.scenarios.length]||'match'};
+          if(q.algorithmOnly)Object.assign(forced,{category:'algorithm',entry:null,opponentCharacter:World.CHARACTERS[Math.floor(index/(entry.model.characters.length*2))%World.CHARACTERS.length].id});
+          let observation = env.reset(forced);
           let rng=(q.options.seed+index*997 ^ 12345)>>>0;
           for (;;) {
             const conditioning = Decisions.context(entry.model.tacticalPolicy, observation.x);

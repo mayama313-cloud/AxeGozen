@@ -41,7 +41,13 @@ def main():
     for row in rows:
         if len(row['returns'])!=len(row['decisionX']) or not 1<=len(row['returns'])<=128 or not all(np.isfinite(v) for v in row['returns']):
             raise ValueError('Invalid simulated action returns')
-    source=args.model.read_bytes();base=json.loads(source.decode('utf-8-sig'));actor=league.LeagueActor(base);expand_actor(actor,args.hidden)
+    source=args.model.read_bytes();base=json.loads(source.decode('utf-8-sig'))
+    metadata_file=Path(str(args.data)+'.meta.json')
+    if metadata_file.exists():
+        metadata=json.loads(metadata_file.read_text(encoding='utf8'))
+        for key in ['cfg','map']:
+            if key in metadata:base['init'][key]=metadata[key]
+    actor=league.LeagueActor(base);expand_actor(actor,args.hidden)
     if args.composed:actor.action_protocol='composed-inputs/14'
     actor.context.requires_grad_(False);actor.critic.requires_grad_(False)
     optimizer=torch.optim.Adam([v for v in actor.parameters() if v.requires_grad],lr=.001)
@@ -68,7 +74,9 @@ def main():
         with torch.no_grad():
             distribution,_=actor(x[indices],c[indices],mask[indices]);choice=distribution.logits.argmax(1)
             actual=returns[indices,choice];best=returns[indices].masked_fill(~mask[indices],-1e9).max(1).values
-        return {'meanReturn':float(actual.mean()),'regret':float((best-actual).mean()),'nearBestFraction':float((best-actual<.1).float().mean())}
+        weights=sample_weight[indices]
+        return {'meanReturn':float((actual*weights).sum()/weights.sum()),'unweightedMeanReturn':float(actual.mean()),
+                'regret':float((best-actual).mean()),'nearBestFraction':float((best-actual<.1).float().mean())}
     def save(name,epoch):
         model=copy.deepcopy(base)
         for key in ['leagueTraining','selection']:model.pop(key,None)

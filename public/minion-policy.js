@@ -52,8 +52,9 @@
     for (const kind of ['obst', 'bushes']) map[kind] = [...(map[kind] || [])].sort((a, b) => sign * (a.x - b.x) || sign * (a.z - b.z));
     walk(scene, 'state', ''); walk(map, 'map', ''); walk(init.cfg, 'cfg', ''); walk(init.characters, 'characters', '');
     // Tower history has reserved inputs in v4; hashing it again would perturb the old policy everywhere.
-    const history = [DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version) || memory.objectives || memory.recallControl ? { ...memory } : memory;
+    const history = [DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version) || memory.objectives || memory.recallControl || memory.student ? { ...memory } : memory;
     delete history.recallControl;
+    delete history.student;
     if (memory.objectives) delete history.objectives;
     if (perception) delete history.perception;
     if ([DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version)) delete history.towers;
@@ -126,6 +127,9 @@
       version = ALARM_VERSION;
     }
     const self = state.players.find(p => p.id === actor);
+    memory.student ||= { camps: {} };
+    for(const e of events)if(self&&e.event==='kill'&&e.data?.attacker?.slot===self.slot&&e.data?.victim?.kind==='monster')
+      memory.student.camps[e.data.victim.id]=e.data.time??state.time;
     for (const p of state.players) if (p.slot !== self?.slot && p.vis) memory.lastSeen.opponent = { x: p.x, z: p.z, seenAt: state.time, character: p.character };
     memory.cues ||= [];
     for (const e of events) memory.cues.push({ event: e.event, data: e.data, time: e.time });
@@ -240,6 +244,8 @@
   function decide(model, observation, actor, memory = {}, draw = null, directionDraw = null, orderDraw = null, decisionDraw = null) {
     const me = observation.players.find(p => p.id === actor);
     if (!me || !model.characters.includes(me.character)) return { event: 'noop', data: null };
+    if(model.tacticalPolicy?.baseProposal===false)return (root.MinionDecisions||require('./minion-decisions')).choose(model,observation,actor,{event:'noop'},memory,
+      model.tacticalPolicy.contextSize?()=>features(observation,actor,model.init,memory,model.featureVersion):null,decisionDraw??draw);
     const world = root.ArenaWorld || (typeof require === 'function' ? require('../game-world') : null);
     const escapeAction = intent => {
       const inputs = model.decisionMode === 'learned/1' ? null : world?.retreatInputs?.(observation, actor, intent);
@@ -333,6 +339,7 @@
       const action = decide(model, state, actor, memory, draw, directionDraw, orderDraw, decisionDraw);
       return commands(model, state, actor, action);
     };
+    act.autoNavigation = model.decisionMode === 'learned/1';
     act.observe = event => cues.push(event);
     act.observeState = observeState;
     act.reset = () => { for (const key of Object.keys(memory)) delete memory[key]; cues = []; seed = initialSeed >>> 0; lastTick = -1; lastDecisionTick = -Infinity; };

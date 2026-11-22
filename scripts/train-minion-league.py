@@ -24,11 +24,13 @@ class LeagueActor(nn.Module):
         super().__init__()
         p = model.get('tacticalPolicy');hidden=p['hiddenSize'] if p else 32
         w=p['weights'] if p else None
+        width=max(WIDTH,p.get('inputSize',WIDTH)) if p else WIDTH
         self.bootstrap=p is None
         p=p or {'inferenceTemperature':1,'actionProtocol':'composed-inputs/14'}
         self.inference_temperature = p.get('inferenceTemperature')
         self.action_protocol=p.get('actionProtocol')
-        self.hidden = nn.Linear(WIDTH, hidden)
+        self.policy_extras={k:p[k] for k in ['baseProposal','camps','featureVersion'] if k in p}
+        self.hidden = nn.Linear(width, hidden)
         self.context = nn.Linear(model['inputSize'], hidden, bias=False)
         self.output = nn.Linear(hidden, 1)
         self.critic = nn.Sequential(nn.Linear(model['inputSize'], 64), nn.Tanh(), nn.Linear(64, 1))
@@ -49,22 +51,25 @@ class LeagueActor(nn.Module):
         return Categorical(logits=scores.masked_fill(~mask, -1e9)), self.critic(x).flatten()
 
     def export(self):
-        result = {'version': 'minion-player-decisions/11', 'inputSize': WIDTH, 'contextSize': self.context.in_features,
+        result = {'version': 'minion-player-decisions/11', 'inputSize': self.hidden.in_features, 'contextSize': self.context.in_features,
                 'hiddenSize': self.hidden.out_features, 'weights': {'hiddenW': self.hidden.weight.detach().tolist(),
                 'hiddenB': self.hidden.bias.detach().tolist(), 'contextW': self.context.weight.detach().tolist(),
                 'outputW': self.output.weight.detach().flatten().tolist(), 'outputB': float(self.output.bias.detach()[0])}}
         if self.inference_temperature is not None: result['inferenceTemperature'] = self.inference_temperature
         if self.action_protocol is not None:result['actionProtocol']=self.action_protocol
+        result.update(self.policy_extras)
         return result
 
 
 def tensors(observations):
     x = torch.tensor(np.asarray([o['x'] for o in observations], dtype=np.float32))
-    choices = np.zeros((len(observations), MAX, WIDTH), dtype=np.float32)
+    width=len(observations[0]['decisionX'][0])
+    if width not in [WIDTH,128]:raise ValueError('Invalid league feature width')
+    choices = np.zeros((len(observations), MAX, width), dtype=np.float32)
     mask = np.zeros((len(observations), MAX), dtype=np.bool_)
     for i, o in enumerate(observations):
         n = len(o['decisionX'])
-        if not 1 <= n <= MAX or any(len(c) != WIDTH for c in o['decisionX']): raise ValueError('Invalid league candidates')
+        if not 1 <= n <= MAX or any(len(c) != width for c in o['decisionX']): raise ValueError('Invalid league candidates')
         choices[i, :n] = o['decisionX']; mask[i, :n] = True
     return x, torch.from_numpy(choices), torch.from_numpy(mask)
 
@@ -85,7 +90,7 @@ def summarize(episodes):
     n = max(1, len(episodes))
     return {'games': len(episodes), 'wins': sum(e['winner'] == 1 for e in episodes), 'losses': sum(e['winner'] == 0 for e in episodes),
             'draws': sum(e['winner'] is None for e in episodes), 'opponents': groups,
-            'mean': {key: sum(e.get(key,0) for e in episodes)/n for key in ['seconds','towerDamage','towers','energy','usefulEnergy','smallKills','ownSmallKills','enemySmallKills','smallDamage','enemyZoneSeconds','largeKills','deaths',
+            'mean': {key: sum(e.get(key,0) for e in episodes)/n for key in ['seconds','towerDamage','directTowerDamage','summonTowerDamage','directTowers','summonTowers','forwardSeconds','towers','energy','usefulEnergy','smallKills','directSmallKills','summonSmallKills','directSmallDamage','summonSmallDamage','ownSmallKills','enemySmallKills','smallDamage','enemyZoneSeconds','largeKills','deaths',
                 'unnecessaryRecalls','repeatRecalls','interruptedRecalls','emptySkills','spawnLoiterSeconds','idleSeconds','attackedFarmSeconds','ignoredBossSeconds']},
             'rewardComponents': {key: sum(e.get('rewardComponents',{}).get(key,0) for e in episodes)/n for key in ['smallMonster','smallMonsterDamage','energy','emptySkill','invalidSkill','spawnLoiter','idle']}}
 

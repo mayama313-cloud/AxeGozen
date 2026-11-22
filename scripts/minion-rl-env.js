@@ -83,6 +83,7 @@ class Environment {
       bushInvestigated: false, bushBeliefAtStart: false, bushHiddenDamage: 0, firstBushHitSeconds: null };
     const hooks = {};
     const idle = () => [];
+    idle.autoNavigation = this.model.decisionMode === 'learned/1';
     idle.observe = event => this.cues.push(event);
     idle.observeState = state => { Policy.updateMemory(this.memory, state, 'cpu-player', this.cues, this.model.featureVersion, this.model.init); this.cues = []; };
     this.game = World.createMatch(false, true, { policy: idle, opponent: this.scenario !== 'defense' && !this.scenario.startsWith('large-') && !this.scenario.startsWith('bush-') && !this.scenario.startsWith('finish-'), onCombat: event => this.combat.push(event) });

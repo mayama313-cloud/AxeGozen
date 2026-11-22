@@ -52,7 +52,8 @@
     for (const kind of ['obst', 'bushes']) map[kind] = [...(map[kind] || [])].sort((a, b) => sign * (a.x - b.x) || sign * (a.z - b.z));
     walk(scene, 'state', ''); walk(map, 'map', ''); walk(init.cfg, 'cfg', ''); walk(init.characters, 'characters', '');
     // Tower history has reserved inputs in v4; hashing it again would perturb the old policy everywhere.
-    const history = [DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version) || memory.objectives ? { ...memory } : memory;
+    const history = [DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version) || memory.objectives || memory.recallControl ? { ...memory } : memory;
+    delete history.recallControl;
     if (memory.objectives) delete history.objectives;
     if (perception) delete history.perception;
     if ([DEFENSE_VERSION, ADAPTER_VERSION, ALARM_VERSION].includes(version)) delete history.towers;

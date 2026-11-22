@@ -37,15 +37,59 @@ test('full-match candidates retain towers and the reindeer, with full context an
   assert.equal(observation.x.length,1072);assert.ok(observation.decisionX.every(x=>x.length===96&&x.every(Number.isFinite)));
   assert.ok(env.choices.some(c=>c.action.event==='chase'&&c.action.data.id.startsWith('t1-')));
   assert.ok(env.choices.some(c=>c.action.event==='chase'&&c.x[85]===1));
-  assert.ok(env.choices.some(c=>c.action.event==='recall'));assert.ok(env.choices.length<=128);
+  assert.ok(!env.choices.some(c=>c.action.event==='recall'));assert.ok(env.choices.length<=128);
 });
-test('unnecessary and repeated recall inputs remain legal but have measured training costs',()=>{
+test('recall is unavailable while healthy at spawn, including the base proposal',()=>{
   const env=new LeagueEnvironment(model(),new Pool(config));env.reset();
-  let i=env.choices.findIndex(c=>c.action.event==='recall');const first=env.step(i,false);
-  assert.equal(env.metrics.unnecessaryRecalls,1);assert.ok(first.reward<-.2);
-  i=env.choices.findIndex(c=>c.action.event==='recall');env.step(i,false);assert.equal(env.metrics.repeatRecalls,1);
-  assert.equal(env.game.state.players['league-learner'].recall,0); // Repeating the player's recall input toggles the channel off.
+  const choices=Decisions.candidates(env.model,env.state,'league-learner',{event:'recall'},env.memory);
+  assert.ok(!choices.some(c=>c.action.event==='recall'));
 });
+function recallEnvironment() {
+  const env=new LeagueEnvironment(model(),new Pool(config));env.reset({slot:0,character:'alex'});
+  Object.assign(env.game.state.players['league-learner'],{x:0,z:8,hp:100});
+  env.memory={};env.state=env.game.observe('league-learner');env.observation();return env;
+}
+
+test('recall completes without repeated inputs or unrelated movement cancelling it',()=>{
+  const env=recallEnvironment();
+  env.step(env.choices.findIndex(c=>c.action.event==='recall'),false);
+  assert.equal(env.metrics.recallStarts,1);
+  for(let i=0;i<16;i++){
+    if(env.state.players.find(p=>p.id==='league-learner').recall>0){
+      assert.equal(env.choices.length,1);assert.equal(env.choices[0].action.event,'noop');
+      const choices=Decisions.candidates(env.model,env.state,'league-learner',{event:'recall'},env.memory);
+      assert.equal(choices[0].action.event,'noop');
+    }
+    env.step(0,false);
+  }
+  const p=env.game.state.players['league-learner'];
+  assert.deepEqual({x:p.x,z:p.z},World.MAP.spawns[0]);
+  assert.equal(env.metrics.repeatRecalls,0);assert.equal(env.metrics.recallStarts,1);
+  assert.ok(!env.choices.some(c=>c.action.event==='recall'));
+});
+
+test('an approaching enemy allows recall cancellation and delays retry after the danger leaves',()=>{
+  const env=recallEnvironment();env.step(env.choices.findIndex(c=>c.action.event==='recall'),false);
+  const p=env.game.state.players['league-learner'],enemy=env.game.state.players['league-opponent'];
+  Object.assign(enemy,{x:p.x+2,z:p.z});env.state=env.game.observe(p.id);env.observation();
+  assert.ok(env.choices.some(c=>c.action.event==='move'));assert.ok(!env.choices.some(c=>c.action.event==='recall'));
+  env.game.input(p.id,'move',{x:p.x,z:p.z});Object.assign(enemy,World.MAP.spawns[1]);
+  env.state=env.game.observe(p.id);env.observation();assert.ok(!env.choices.some(c=>c.action.event==='recall'));
+  for(let i=0;i<World.TICK*3+1;i++)env.game.tick();
+  env.state=env.game.observe(p.id);env.observation();assert.ok(env.choices.some(c=>c.action.event==='recall'));
+});
+
+test('recall excludes high HP, home proximity, tower fire and recent damage without changing model features',()=>{
+  const env=recallEnvironment(),p=env.state.players.find(p=>p.id==='league-learner');
+  const noRecall=()=>assert.ok(!Decisions.candidates(env.model,env.state,p.id,{event:'recall'},env.memory).some(c=>c.action.event==='recall'));
+  p.hp=p.maxHp;noRecall();p.hp=100;
+  Object.assign(p,World.MAP.spawns[0]);noRecall();Object.assign(p,{x:0,z:8});
+  env.state.towers.push({id:'threat',slot:1,x:0,z:13});noRecall();env.state.towers.pop();
+  env.state.time+=.2;p.hp=90;noRecall();
+  const withoutControl={...env.memory};delete withoutControl.recallControl;
+  assert.deepEqual(Policy.features(env.state,p.id,env.model.init,env.memory,env.model.featureVersion),Policy.features(env.state,p.id,env.model.init,withoutControl,env.model.featureVersion));
+});
+
 test('time limits truncate with no winner; player death does not end a match',()=>{
   const env=new LeagueEnvironment(model(),new Pool(config),{maxSeconds:1});env.reset();
   const p=env.game.state.players['league-learner'];p.dead=true;p.respawn=5;

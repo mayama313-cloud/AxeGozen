@@ -53,6 +53,28 @@
     const me = state.players.find(p => p.id === actor), cfg = World.configFor(me.character), sign = me.slot ? -1 : 1, home = World.MAP.spawns[me.slot];
     const league = model.tacticalPolicy?.inputSize === LEAGUE_SIZE;
     const composed=model.tacticalPolicy?.actionProtocol==='composed-inputs/14';
+    let recallAllowed = true, holdRecall = false;
+    if (league) {
+      const prior = memory.recallControl;
+      const now = state.time;
+      const control = !prior || now < prior.time ? { retryAt: -100, damagedAt: -100 } : prior;
+      if (prior && me.hp < prior.hp) control.damagedAt = now;
+      if (prior?.recall > 0 && !me.recall) control.retryAt = now + 3;
+      const threatens = (e, range) => {
+        if (e.slot === me.slot || e.dead || e.vis === false || !Number.isFinite(e.x)) return false;
+        return distance(me, e) <= range + cfg.radius + 1;
+      };
+      const danger = state.players.some(e => {
+        const enemyCfg = World.configFor(e.character);
+        return threatens(e, Math.max(enemyCfg.atkRange, enemyCfg.qRange, e.character === 'mira' ? enemyCfg.magicRange : enemyCfg.cRange || 0));
+      }) || state.robots.some(e => threatens(e, World.configFor(e.character).robot.atkRange))
+        || state.towers.some(e => threatens(e, World.CFG.tower.range)) || now - control.damagedAt < 1;
+      recallAllowed = !me.recall && !me.safe && me.hp < me.maxHp * .9
+        && distance(me, home) > World.CFG.safeRadius + 2 && now >= control.retryAt && !danger;
+      holdRecall = me.recall > 0 && !danger;
+      memory.recallControl = { ...control, time: now, hp: me.hp, recall: me.recall };
+      if (holdRecall || !recallAllowed && (base?.event === 'recall' || base?.inputs?.some(c => c.event === 'recall'))) base = { event: 'noop' };
+    }
     if (league) {
       const prior = memory.leagueSignals;
       if (!prior || prior.tick !== state.tick) memory.leagueSignals = { tick: state.tick, hp: me.hp,
@@ -87,6 +109,7 @@
       }, 1);
     }
     function add(action, target = null, kind = 'point', delegate = false) {
+      if (league && !recallAllowed && (action.event === 'recall' || action.inputs?.some(c => c.event === 'recall'))) return;
       if (result.length >= MAX) return;
       const point = action.event === 'steer' ? { x: me.x + action.data.x * 6, z: me.z + action.data.z * 6 } : target || (Number.isFinite(action.data?.x) ? action.data : me);
       const range = action.event === 'q' ? cfg.qRange : action.event === 'c' && me.character === 'mira' ? cfg.magicRange : action.event === 'c' ? cfg.cRange || cfg.atkRange : action.event === 'dash' || action.event === 'leap' ? cfg.leapRange : cfg.atkRange;
@@ -127,6 +150,7 @@
     }
     const baseTarget = base?.event === 'chase' ? [...heroes.map(p => ({ ...p, kind: 'hero' })), ...state.robots.map(p => ({ ...p, kind: 'robot' })), ...state.monsters.map(p => ({ ...p, kind: 'monster' })), ...state.towers.map(p => ({ ...p, kind: 'tower' }))].find(p => p.id === base.data?.id) : null;
     add(base || { event: 'noop' }, baseTarget, baseTarget?.kind || 'point', true);
+    if (holdRecall) return result;
     if (model.tacticalPolicy?.scope === 'visible-encounter/1' && !heroes.some(p => distance(me, p) <= Math.max(16, cfg.leapRange))) return result;
     if (state.phase !== 'playing' || me.dead || me.stun > 0 || me.air > 0 || me.warping || me.charging || me.grabbing || me.grabbed || me.flying) return result;
     add({ event: 'noop' }); add({ event: 'move', data: { x: home.x, z: home.z } }, home, 'home');
